@@ -3,7 +3,7 @@
 # RLB
 ### Relax. Lemme Build.
 
-**The first AI software engineering workspace built on a simple idea:**
+**An AI software engineering workspace built on a simple idea:**
 **capability and control are not opposites.**
 
 [![Status](https://img.shields.io/badge/status-active_development-blue)]()
