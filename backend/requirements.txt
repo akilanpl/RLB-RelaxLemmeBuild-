@@ -1,0 +1,7 @@
+fastapi
+pydantic-settings
+sqlalchemy
+asyncpg
+httpx
+PyJWT>=2.8,<3
+cryptography>=42

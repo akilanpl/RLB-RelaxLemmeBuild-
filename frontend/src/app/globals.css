@@ -1,0 +1,216 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --rlb-midnight: #0c1c2e;
+  --rlb-navy: #143047;
+  --rlb-sky: #8ec8e6;
+  --rlb-sky-deep: #4a90b8;
+  --rlb-cream: #f6efe4;
+  --rlb-paper: #fffaf3;
+  --rlb-lavender: #c9b8e8;
+  --rlb-violet: #8d7ab8;
+  --rlb-coral: #e07a5f;
+  --rlb-meadow: #6a9f7a;
+  --rlb-gold: #e8c47c;
+  --rlb-ink: #1a2a38;
+  --rlb-muted: #5c6d7a;
+  --background: #0c1c2e;
+  --foreground: #f6efe4;
+  --radius-sm: 12px;
+  --radius-md: 16px;
+  --radius-lg: 22px;
+  --radius-xl: 28px;
+  --shadow-soft: 0 12px 32px -16px rgba(12, 28, 46, 0.5);
+  --shadow-float: 0 22px 50px -24px rgba(12, 28, 46, 0.55);
+  --shadow-inset: inset 0 1px 0 rgba(255, 250, 243, 0.06);
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-slow: 800ms;
+  --motion-med: 480ms;
+}
+
+html {
+  scroll-behavior: auto;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  color: var(--foreground);
+  background:
+    radial-gradient(1200px 700px at 12% -10%, rgba(78, 124, 158, 0.18), transparent 55%),
+    radial-gradient(900px 500px at 100% 0%, rgba(224, 122, 95, 0.08), transparent 45%),
+    var(--rlb-midnight);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+.font-hand {
+  font-family: var(--font-hand), ui-serif, Georgia, cursive;
+}
+
+.glass {
+  background: rgba(255, 250, 243, 0.12);
+  border: 1px solid rgba(255, 250, 243, 0.22);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+}
+
+.glass-dark {
+  background: rgba(12, 28, 46, 0.55);
+  border: 1px solid rgba(246, 239, 228, 0.1);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+}
+
+.paper {
+  background: linear-gradient(180deg, rgba(255, 250, 243, 0.96), rgba(246, 239, 228, 0.92));
+  color: var(--rlb-ink);
+  box-shadow: var(--shadow-soft);
+}
+
+.surface {
+  background: linear-gradient(180deg, rgba(20, 48, 71, 0.72), rgba(12, 28, 46, 0.78));
+  border: 1px solid rgba(246, 239, 228, 0.1);
+  box-shadow: var(--shadow-inset), var(--shadow-soft);
+}
+
+.hover-lift {
+  transition: transform 220ms var(--ease-out-soft), box-shadow 220ms var(--ease-out-soft), border-color 220ms var(--ease-out-soft);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .hover-lift:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 16px 36px -18px rgba(12, 28, 46, 0.7);
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+@keyframes rlb-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes rlb-drift {
+  0% {
+    transform: translateX(0);
+  }
+  50% {
+    transform: translateX(18px);
+  }
+  100% {
+    transform: translateX(0);
+  }
+}
+
+@keyframes rlb-bob {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-1deg);
+  }
+  50% {
+    transform: translateY(-6px) rotate(1.4deg);
+  }
+}
+
+@keyframes rlb-twinkle {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes rlb-sunpulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  50% {
+    transform: scale(1.06);
+    opacity: 1;
+  }
+}
+
+.animate-float {
+  animation: rlb-float 7s var(--ease-out-soft) infinite;
+}
+
+.animate-drift {
+  animation: rlb-drift 18s var(--ease-out-soft) infinite;
+}
+
+.animate-bob {
+  animation: rlb-bob 5.5s var(--ease-out-soft) infinite;
+}
+
+.animate-twinkle {
+  animation: rlb-twinkle 3.4s ease-in-out infinite;
+}
+
+.animate-sunpulse {
+  animation: rlb-sunpulse 8s ease-in-out infinite;
+}
+
+@keyframes rlb-pulse-dot {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.25);
+  }
+}
+
+.animate-pulse-dot {
+  animation: rlb-pulse-dot 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .animate-float,
+  .animate-drift,
+  .animate-bob,
+  .animate-twinkle,
+  .animate-sunpulse,
+  .animate-pulse-dot {
+    animation: none !important;
+  }
+}
+
+.monaco-editor,
+.monaco-editor .margin,
+.monaco-editor-background {
+  background-color: #101820 !important;
+}
