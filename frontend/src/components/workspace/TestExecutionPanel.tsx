@@ -10,15 +10,28 @@ export default function TestExecutionPanel({ taskId, userId }: { taskId: string;
 
   useEffect(() => {
     let active = true;
-    Promise.all([apiClient.getTestPlan(taskId, userId), apiClient.getTestExecutions(taskId, userId)])
-      .then(([nextPlan, executions]) => {
+    let timer: ReturnType<typeof setTimeout>;
+    setPlan(null);
+    setExecution(null);
+    setError(undefined);
+    const load = async () => {
+      try {
+        const [nextPlan, executions] = await Promise.all([
+          apiClient.getTestPlan(taskId, userId), apiClient.getTestExecutions(taskId, userId),
+        ]);
         if (active) {
           setPlan(nextPlan);
           setExecution(executions[executions.length - 1] ?? null);
+          setError(undefined);
         }
-      })
-      .catch((err: unknown) => active && setError(err instanceof Error ? err.message : 'Unable to load test results'));
-    return () => { active = false; };
+      } catch (err: unknown) {
+        if (active) setError(err instanceof Error ? err.message : 'Unable to load test results');
+      } finally {
+        if (active) timer = setTimeout(() => void load(), 3000);
+      }
+    };
+    void load();
+    return () => { active = false; clearTimeout(timer); };
   }, [taskId, userId]);
 
   if (error) return <p className="text-xs text-rose-400">{error}</p>;

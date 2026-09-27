@@ -125,7 +125,7 @@ async def get_authenticated_user(
         claims = await _decode_and_verify(token)
         return AuthenticatedUserContext(UUID(str(claims["sub"])), claims)
 
-    if settings.ENVIRONMENT != "production" and x_user_id:
+    if settings.ENVIRONMENT in {"development", "test"} and x_user_id:
         try:
             return AuthenticatedUserContext(UUID(x_user_id), {"development_header": True})
         except ValueError as exc:

@@ -18,9 +18,13 @@ class DaytonaSandboxDriver(BaseSandboxDriver):
             resources=limits.model_dump(),
             network_enabled=limits.network_enabled,
         )
-        await sandbox.mkdir("/workspace")
-        await self.client.restore_snapshot(sandbox, staging_root_path, "/workspace")
-        return sandbox.id
+        try:
+            await sandbox.mkdir("/workspace")
+            await self.client.restore_snapshot(sandbox, staging_root_path, "/workspace")
+            return sandbox.id
+        except BaseException:
+            await self.client.destroy(sandbox.id)
+            raise
 
     async def execute_command(self, sandbox_id: str, command: SandboxCommand) -> SandboxExecutionResult:
         result = await self.client.execute(

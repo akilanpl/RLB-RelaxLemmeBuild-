@@ -38,12 +38,4 @@ export function getSupabaseClient(): SupabaseClient | null {
   return clientInstance;
 }
 
-export const supabase = isSupabaseConfigured && supabaseUrl && supabaseAnonKey
-  ? createClient(supabaseUrl, supabaseAnonKey, {
-      auth: {
-        persistSession: true,
-        autoRefreshToken: true,
-        detectSessionInUrl: true,
-      },
-    })
-  : null;
+export const supabase = getSupabaseClient();

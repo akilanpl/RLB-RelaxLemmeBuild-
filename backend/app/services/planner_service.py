@@ -54,6 +54,7 @@ class PlannerService:
             not revision_feedback
             and any(r.agent_role == AgentRole.PLANNER and r.status == ExecutionStatus.SUCCESS for r in prior_runs)
             and prior_plan
+            and datetime.fromisoformat(prior_plan[0].created_at) >= task.updated_at
         ):
             return prior_plan[0]
         run = await workflow.create_agent_run(
@@ -67,7 +68,8 @@ class PlannerService:
             response = await gateway.generate(AIRequest(
                 system_prompt=(
                     "You are a read-only software engineering planner. Return only JSON matching "
-                    "the ImplementationPlan schema. Never propose edits outside the supplied context."
+                    "this schema: " + json.dumps(ImplementationPlan.model_json_schema()) +
+                    ". Never propose edits outside the supplied context."
                 ),
                 user_prompt=prompt,
             ))

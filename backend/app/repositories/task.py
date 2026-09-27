@@ -396,7 +396,7 @@ class PostgresTaskRepository:
                 "files": json.dumps(data["affected_files"]),
                 "revision": plan.revision_number, "structured": json.dumps(data),
                 "snapshot": plan.source_snapshot_hash, "status": plan.status,
-                "created": plan.created_at,
+                "created": datetime.fromisoformat(plan.created_at.replace("Z", "+00:00")),
             })
         return plan
 

@@ -34,7 +34,7 @@ class SupabaseStorageBackend(BaseStorageBackend):
         try:
             await self.read_file(relative_path)
             return True
-        except Exception:
+        except FileNotFoundError:
             return False
 
     async def list_files(self, prefix: str = "") -> List[str]:

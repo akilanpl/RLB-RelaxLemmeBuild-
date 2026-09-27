@@ -41,7 +41,7 @@ yarn-error.log*
 *.swo
 
 # Runtime/generated workspace data
-storage/
+/storage/
 
 # TypeScript build cache
 *.tsbuildinfo

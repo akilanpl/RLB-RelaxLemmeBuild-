@@ -95,7 +95,7 @@ class RuntimeResolver:
                 continue
             for role, worker_id in raw.items():
                 self.overrides[(row["id"], str(role))] = (str(worker_id), far_future)
-        self._quota_gateways.clear()
+        # Preserve per-task quota counters when refreshing configuration.
 
     def register_worker(self, worker: Worker) -> None:
         self.workers[worker.id] = worker
@@ -204,6 +204,9 @@ class RuntimeResolver:
                 self.max_output_tokens,
             )
             self._quota_gateways[gateway_key] = gateway
+        else:
+            # Refresh rotated credentials/models without resetting the task quota.
+            gateway.gateway = ProviderGateway(adapter, credential, worker.model_name)
         return ResolvedRuntime(
             role=role,
             worker_id=worker.id,

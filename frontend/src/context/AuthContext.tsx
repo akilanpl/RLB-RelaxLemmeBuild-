@@ -57,9 +57,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     client.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setUser(session?.user ?? null);
-      if (session?.user) {
-        loadProfile(session.user.id);
-      }
       setIsLoading(false);
     }).catch(() => {
       setIsLoading(false);
@@ -67,12 +64,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     // 2. Realtime auth state subscription
     const { data: { subscription } } = client.auth.onAuthStateChange(
-      async (_event, newSession) => {
+      (_event, newSession) => {
         setSession(newSession);
         setUser(newSession?.user ?? null);
-        if (newSession?.user) {
-          await loadProfile(newSession.user.id);
-        } else {
+        if (!newSession?.user) {
           setProfile(null);
         }
         setIsLoading(false);
@@ -84,13 +79,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, [loadProfile]);
 
+  // Fetch outside the auth callback: Supabase delivers events while holding
+  // its session lock, which authenticated database requests also need.
+  useEffect(() => {
+    let active = true;
+    setProfile(null);
+    if (user?.id) {
+      void fetchUserProfile(user.id).then((value) => {
+        if (active) setProfile(value);
+      }).catch(() => {
+        if (active) setProfile(null);
+      });
+    }
+    return () => { active = false; };
+  }, [user?.id]);
+
   const login = async (email: string, password: string) => {
     const newSession = await signInWithEmail(email, password);
     setSession(newSession);
     setUser(newSession.user);
-    if (newSession.user) {
-      await loadProfile(newSession.user.id);
-    }
   };
 
   const signup = async (email: string, password: string, displayName?: string) => {
@@ -98,9 +105,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (result.session) {
       setSession(result.session);
       setUser(result.session.user);
-      if (result.session.user) {
-        await loadProfile(result.session.user.id);
-      }
     }
     return { session: result.session };
   };

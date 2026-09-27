@@ -46,7 +46,7 @@ class CodebaseAnalysisService:
         repository: Optional[AnalysisRepository] = None,
     ):
         self.workspace_service = workspace_service or WorkspaceService()
-        self.storage = storage or get_storage_backend()
+        self.storage = storage or self.workspace_service.storage
         self.indexer = FileIndexer()
         sessions = get_sessionmaker()
         if repository is not None:

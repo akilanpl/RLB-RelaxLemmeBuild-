@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { apiClient } from '@/lib/api';
+import { apiClient, ApiError } from '@/lib/api';
 import type { CodebaseAnalysisResult } from '@/types/workspace';
 import {
   Cpu,
@@ -40,8 +40,8 @@ export default function CodebaseIntelligencePanel({
     try {
       const data = await apiClient.getWorkspaceAnalysis(workspaceId, userId);
       setAnalysis(data);
-    } catch (err: any) {
-      if (err?.status === 404) {
+    } catch (err: unknown) {
+      if (err instanceof ApiError && err.status === 404) {
         // Not yet analyzed - normal state before first run
         setAnalysis(null);
       } else {
@@ -62,7 +62,7 @@ export default function CodebaseIntelligencePanel({
     try {
       const data = await apiClient.triggerAnalysis(workspaceId, force, userId);
       setAnalysis(data);
-    } catch (err: any) {
+    } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Analysis failed to run');
     } finally {
       setIsAnalyzing(false);

@@ -1,11 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { apiClient } from '@/lib/api';
 import { ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
+import FinalReviewPanel from '@/components/workspace/FinalReviewPanel';
 import TestExecutionPanel from '@/components/workspace/TestExecutionPanel';
 import { cn } from '@/lib/cn';
 
-type Tab = 'terminal' | 'problems' | 'output' | 'tests';
+type Tab = 'terminal' | 'problems' | 'output' | 'tests' | 'review';
 
 interface Props {
   taskId?: string | null;
@@ -16,11 +18,6 @@ interface Props {
   outputLines?: string[];
 }
 
-const SAMPLE = [
-  'Sandbox terminal output appears after Test Executor runs.',
-  'Nothing executes on your host from this panel.',
-];
-
 export function BottomPanel({
   taskId,
   userId,
@@ -30,12 +27,42 @@ export function BottomPanel({
   outputLines = [],
 }: Props) {
   const [tab, setTab] = useState<Tab>('terminal');
+  const [terminalLines, setTerminalLines] = useState<string[]>([]);
+  const [terminalError, setTerminalError] = useState<string>();
+  useEffect(() => {
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    setTerminalLines([]);
+    setTerminalError(undefined);
+    if (!taskId || tab !== 'terminal' || collapsed) return;
+    const load = async () => {
+      try {
+        const executions = await apiClient.getTestExecutions(taskId, userId);
+        const latest = executions[executions.length - 1];
+        if (active) {
+          setTerminalLines(latest?.baseline_results.flatMap((result) => [
+            `[${result.check_type}] ${result.status}`,
+            result.stdout_output || '', result.stderr_output || '',
+          ]).filter(Boolean) ?? []);
+          setTerminalError(undefined);
+        }
+      } catch (err: unknown) {
+        if (active) setTerminalError(err instanceof Error ? err.message : 'Unable to load sandbox output');
+      } finally {
+        if (active) timer = setTimeout(() => void load(), 3000);
+      }
+    };
+    void load();
+    return () => { active = false; clearTimeout(timer); };
+  }, [taskId, userId, tab, collapsed]);
+
 
   const tabs: Array<{ id: Tab; label: string }> = [
     { id: 'terminal', label: 'Terminal' },
     { id: 'problems', label: 'Problems' },
     { id: 'output', label: 'Output' },
     { id: 'tests', label: 'Tests' },
+    { id: 'review', label: 'Review' },
   ];
 
   return (
@@ -62,7 +89,8 @@ export function BottomPanel({
         <div className="flex-1 overflow-auto p-3 text-xs font-mono text-meadow/80">
           {tab === 'terminal' && (
             <div className="space-y-1">
-              {SAMPLE.map((line) => <p key={line}>{line}</p>)}
+              {terminalError && <p className="text-coral">{terminalError}</p>}
+              {terminalLines.length ? terminalLines.map((line, index) => <pre key={index} className="whitespace-pre-wrap break-words">{line}</pre>) : <p className="text-cream/35">No sandbox output yet. Command results appear after execution.</p>}
             </div>
           )}
           {tab === 'problems' && (
@@ -79,6 +107,7 @@ export function BottomPanel({
               ? <p className="text-cream/35">No agent output yet.</p>
               : outputLines.map((line, i) => <div key={i}>{line}</div>)
           )}
+          {tab === 'review' && (taskId ? <FinalReviewPanel taskId={taskId} userId={userId} /> : <p>No active task.</p>)}
           {tab === 'tests' && (
             taskId
               ? <TestExecutionPanel taskId={taskId} userId={userId} />

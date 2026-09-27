@@ -41,7 +41,7 @@ def get_engine() -> Optional[AsyncEngine]:
         parsed = urlparse(db_url)
         hostname = (parsed.hostname or "").lower()
         connect_args: dict = {}
-        if hostname.endswith("supabase.com") or "pooler.supabase" in hostname:
+        if hostname.endswith((".supabase.com", ".supabase.co")) or "pooler.supabase" in hostname:
             try:
                 import certifi
                 ssl_context = ssl.create_default_context(cafile=certifi.where())
@@ -49,7 +49,7 @@ def get_engine() -> Optional[AsyncEngine]:
                 ssl_context = ssl.create_default_context()
             # Local networks sometimes intercept TLS with a private CA.
             # Keep encryption on; only skip CA verification outside production.
-            if settings.ENVIRONMENT != "production":
+            if settings.ENVIRONMENT in {"development", "test"}:
                 ssl_context.check_hostname = False
                 ssl_context.verify_mode = ssl.CERT_NONE
             connect_args["ssl"] = ssl_context

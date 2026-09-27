@@ -26,7 +26,7 @@ class CredentialService:
     def __init__(self, key: str | bytes | None = None):
         raw = key or get_settings().CREDENTIAL_ENCRYPTION_KEY
         if not raw:
-            if get_settings().ENVIRONMENT == "production":
+            if get_settings().ENVIRONMENT in {"staging", "production"}:
                 raise ValueError("CREDENTIAL_ENCRYPTION_KEY is required")
             # Development convenience only; production always requires an injected key.
             raw = hashlib.sha256(b"local-development-credential-key").digest()

@@ -23,7 +23,7 @@ class PlannerContextBuilder:
     async def build(self, task: TaskRecord) -> Dict[str, Any]:
         analysis = await self.analysis_service.get_latest_analysis(task.workspace_id, task.user_id)
         if not analysis:
-            raise RuntimeError("Codebase analysis is required before planning.")
+            analysis = await self.analysis_service.analyze_workspace(task.workspace_id, task.user_id)
         keywords = set((task.title + " " + task.objective).lower().split())
         scored = []
         for file in analysis.indexed_files:

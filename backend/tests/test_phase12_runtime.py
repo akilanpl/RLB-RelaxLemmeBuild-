@@ -157,3 +157,43 @@ async def test_worker_security_and_terminal_task_protection():
     job = await queue.enqueue(task.id, user_a)
     assert await queue.claim("worker-a") is None
     assert queue.jobs[job.id].status == JobStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_missing_handler_preserves_original_failure():
+    user = uuid4()
+    engine = WorkflowEngine(repository=InMemoryTaskRepository())
+    task = await engine.create_task(make_workspace(user), user, "task", "objective")
+    queue = LocalJobQueue(engine)
+    job = await queue.enqueue(task.id, user)
+    with pytest.raises(RuntimeError, match="No handler registered for workflow state ready"):
+        await DurableTaskWorker(queue, "worker", {}).run_once()
+    assert job.status == JobStatus.FAILED
+    assert "No handler" in job.error
+
+
+@pytest.mark.asyncio
+async def test_long_running_stage_renews_lease_and_prevents_duplicate_execution():
+    user = uuid4()
+    engine = WorkflowEngine(repository=InMemoryTaskRepository())
+    task = await engine.create_task(make_workspace(user), user, "task", "objective")
+    queue = LocalJobQueue(engine, lease_seconds=0.12)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def ready(job):
+        started.set()
+        await release.wait()
+        current = await engine.get_task(job.task_id, job.user_id)
+        await engine.transition(task.id, WorkflowState.CANCELLED, ActorType.USER, user,
+                                "done", expected_version=current.version)
+
+    await queue.enqueue(task.id, user)
+    runner = asyncio.create_task(DurableTaskWorker(queue, "first", {WorkflowState.READY: ready}).run_once())
+    try:
+        await started.wait()
+        await asyncio.sleep(0.3)
+        assert await queue.claim("second") is None
+    finally:
+        release.set()
+        await runner

@@ -73,11 +73,12 @@ class CoderService:
         task = await self.workflow.get_task(task_id, user_id)
         if task.status != WorkflowState.CODING:
             raise CoderExecutionError("Task must be in CODING before Coder execution.")
-        prior_runs = await self.workflow.list_agent_runs(task_id, user_id)
-        if any(r.agent_role == AgentRole.CODER and r.status == ExecutionStatus.SUCCESS for r in prior_runs):
-            proposals = await self.proposals.list_by_task(task_id)
-            if proposals:
-                return proposals[-1]
+        proposals = await self.proposals.list_by_task(task_id)
+        latest = proposals[0] if proposals else None
+        if (not revision_feedback and latest is not None
+                and latest.status == "ready_for_review"
+                and latest.created_at >= task.updated_at):
+            return latest
         staging_id = staging_id or task.active_staging_workspace_id
         if staging_id is None:
             raise CoderExecutionError("An active staging workspace is required.")
@@ -97,8 +98,10 @@ class CoderService:
         await self.workflow.update_agent_run(run.id, ExecutionStatus.RUNNING)
         try:
             context = await self.context_builder.build(task, staging_id)
+            context["approved_plans"] = [p.model_dump(mode="json") for p in
+                await self.workflow.list_plans(task_id, user_id)]
             response = await gateway.generate(AIRequest(
-                system_prompt="Return only JSON matching CodeChangeSet. Changes are staging-only.",
+                system_prompt="Return only JSON matching this schema. Changes are staging-only. " + json.dumps(CodeChangeSet.model_json_schema()),
                 user_prompt=json.dumps({"context": context, "revision_feedback": revision_feedback},
                                         sort_keys=True),
             ))
@@ -179,11 +182,20 @@ class CoderService:
         if proposal.status == "applied":
             raise CoderExecutionError("Code proposal has already been applied.")
         task = await self.workflow.get_task(proposal.task_id, user_id)
+        if task.status != WorkflowState.CODE_REVIEW or proposal.status != "ready_for_review":
+            raise CoderExecutionError("Code proposal is not awaiting approval.")
         staging = await self.staging_service.get_staging_workspace(proposal.staging_workspace_id, user_id)
         ws = await self.staging_service.workspace_service.get_workspace(task.workspace_id, user_id)
         if not _same_snapshot(ws.current_snapshot_hash, proposal.base_snapshot_hash):
             raise SnapshotConflictError("Approved workspace changed since staging was created.")
         storage = self.staging_service.storage
+        sessions = get_sessionmaker()
+        if sessions is not None:
+            from backend.app.services.cloud_promotion import promote_snapshot
+            try:
+                return await promote_snapshot(sessions, storage, ws, staging, proposal, task, user_id)
+            except ValueError as exc:
+                raise SnapshotConflictError(str(exc)) from exc
         canonical = await storage.list_files(ws.canonical_root_path)
         backup = {p: await storage.read_file(p) for p in canonical}
         from backend.app.services.workspace_service import _MEMORY_FILES

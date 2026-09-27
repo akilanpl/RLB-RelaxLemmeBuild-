@@ -24,21 +24,31 @@ from backend.app.services.test_orchestrator import TestOrchestrationService
 from backend.app.services.reviewer_service import ReviewerExecutionError, ReviewerService
 from backend.app.repositories.reviewer import InMemoryReviewerReportRepository, PostgresReviewerReportRepository
 from backend.app.services.job_queue import LocalJobQueue
+from backend.app.services.supabase_queue import SupabaseQueueAdapter
+from backend.app.services.supabase_queue_client import SupabaseQueueClient
+from backend.app.db.session import get_engine
+from backend.app.core.config import get_settings
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 _sessionmaker = get_sessionmaker()
 testing_repository = PostgresTestingRepository(_sessionmaker) if _sessionmaker else InMemoryTestingRepository()
 reviewer_repository = PostgresReviewerReportRepository(_sessionmaker) if _sessionmaker else InMemoryReviewerReportRepository()
 reviewer_service = ReviewerService(repository=reviewer_repository)
-job_queue = LocalJobQueue(workflow_engine)
+job_queue = (SupabaseQueueAdapter(SupabaseQueueClient(get_engine()),
+             get_settings().SUPABASE_QUEUE_NAME, workflow_engine)
+             if get_settings().ENVIRONMENT in {"staging", "production"} and _sessionmaker
+             else LocalJobQueue(workflow_engine))
 
 
 def configure_agent_services(services) -> None:
     """Replace module-level production services while preserving test injection."""
-    global planner_service, coder_service, reviewer_service
+    global planner_service, coder_service, reviewer_service, reviewer_repository
     planner_service = services.planner
     coder_service = services.coder
     reviewer_service = services.reviewer
+    reviewer_repository = services.reviewer.repository
+    reviewer_service.context_builder.proposals = services.coder.proposals
+    reviewer_service.context_builder.testing = testing_repository
 
 
 class CreateTaskRequest(BaseModel):
@@ -135,6 +145,9 @@ async def revise_task(task_id: UUID, request: TransitionRequest, auth: Authentic
 @router.post("/{task_id}/transition")
 async def transition_task(task_id: UUID, request: TransitionRequest, auth: AuthenticatedUserContext = Depends(get_authenticated_user)):
     try:
+        await workflow_engine.get_task(task_id, auth.user_id)
+        if request.target_state not in {WorkflowState.PLANNING, WorkflowState.CANCELLED}:
+            raise HTTPException(status_code=409, detail="This transition is managed by the worker or an approval gate.")
         return await workflow_engine.transition(task_id, request.target_state, ActorType.USER, auth.user_id, request.reason, request.metadata, request.expected_version)
     except TaskNotFoundError:
         raise HTTPException(status_code=404, detail="Task not found.")
@@ -151,6 +164,8 @@ async def record_approval(task_id: UUID, request: ApprovalRequest, auth: Authent
     if request.status not in {"approved", "rejected", "revision_requested"}:
         raise HTTPException(status_code=422, detail="Invalid approval status.")
     try:
+        if request.approval_type == "code" and request.status == "approved":
+            raise HTTPException(status_code=409, detail="Approve a specific code proposal to apply its reviewed changes.")
         approval = await workflow_engine.record_approval(task_id, auth.user_id, request.approval_type, request.status, request.feedback)
         if request.status in {"approved", "revision_requested"}:
             await job_queue.enqueue(task_id, auth.user_id)
@@ -176,6 +191,8 @@ async def get_agent_runs(task_id: UUID, auth: AuthenticatedUserContext = Depends
 @router.post("/{task_id}/review")
 async def run_reviewer(task_id: UUID, auth: AuthenticatedUserContext = Depends(get_authenticated_user)):
     """Run the read-only final review; only orchestration may complete the task."""
+    if get_settings().ENVIRONMENT in {"staging", "production"}:
+        raise HTTPException(status_code=409, detail="Execution is owned by the durable worker. Use the resume endpoint.")
     try:
         return await reviewer_service.execute(task_id, auth.user_id)
     except TaskNotFoundError:
@@ -203,6 +220,8 @@ async def get_reviewer_report(task_id: UUID, auth: AuthenticatedUserContext = De
 @router.post("/{task_id}/planner")
 async def run_planner(task_id: UUID, request: PlannerRequest = PlannerRequest(),
                       auth: AuthenticatedUserContext = Depends(get_authenticated_user)):
+    if get_settings().ENVIRONMENT in {"staging", "production"}:
+        raise HTTPException(status_code=409, detail="Execution is owned by the durable worker. Use the resume endpoint.")
     try:
         task = await workflow_engine.get_task(task_id, auth.user_id)
         if task.status == WorkflowState.PLAN_REVIEW and not request.revision_feedback:
@@ -260,6 +279,8 @@ async def get_test_plan(task_id: UUID, auth: AuthenticatedUserContext = Depends(
 async def create_test_plan(
     task_id: UUID, auth: AuthenticatedUserContext = Depends(get_authenticated_user)
 ):
+    if get_settings().ENVIRONMENT in {"staging", "production"}:
+        raise HTTPException(status_code=409, detail="Execution is owned by the durable worker. Use the resume endpoint.")
     try:
         task = await workflow_engine.get_task(task_id, auth.user_id)
         if task.status != WorkflowState.TEST_PLANNING:
@@ -309,6 +330,8 @@ async def get_test_executions(task_id: UUID, auth: AuthenticatedUserContext = De
 @router.post("/{task_id}/coder")
 async def run_coder(task_id: UUID, request: CoderRequest = CoderRequest(),
                     auth: AuthenticatedUserContext = Depends(get_authenticated_user)):
+    if get_settings().ENVIRONMENT in {"staging", "production"}:
+        raise HTTPException(status_code=409, detail="Execution is owned by the durable worker. Use the resume endpoint.")
     try:
         proposal = await coder_service.execute(
             task_id, auth.user_id, request.staging_workspace_id, request.revision_feedback
@@ -333,7 +356,10 @@ async def approve_code_proposal(
     proposal_id: UUID, auth: AuthenticatedUserContext = Depends(get_authenticated_user)
 ):
     try:
-        return await coder_service.approve_and_apply(proposal_id, auth.user_id)
+        result = await coder_service.approve_and_apply(proposal_id, auth.user_id)
+        proposal = await coder_service.proposals.get(proposal_id)
+        await job_queue.enqueue(proposal.task_id, auth.user_id)
+        return result
     except CoderExecutionError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
@@ -380,7 +406,9 @@ async def revise_code_proposal(
     auth: AuthenticatedUserContext = Depends(get_authenticated_user),
 ):
     try:
-        return await coder_service.request_revision(proposal_id, auth.user_id, request.feedback)
+        proposal = await coder_service.request_revision(proposal_id, auth.user_id, request.feedback)
+        await job_queue.enqueue(proposal.task_id, auth.user_id)
+        return proposal
     except (CoderExecutionError, TaskNotFoundError) as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
@@ -400,3 +428,17 @@ async def get_permissions(task_id: UUID, auth: AuthenticatedUserContext = Depend
     await _get_task_or_error(task_id, auth)
     from backend.app.core.permissions import AgentPermissionGatekeeper
     return {role.value: sorted(tools) for role, tools in AgentPermissionGatekeeper.ROLE_PERMISSIONS.items()}
+
+
+@router.post("/{task_id}/resume", status_code=202)
+async def resume_task(task_id: UUID, auth: AuthenticatedUserContext = Depends(get_authenticated_user)):
+    try:
+        task = await workflow_engine.get_task(task_id, auth.user_id)
+        if task.status in {WorkflowState.COMPLETED, WorkflowState.CANCELLED, WorkflowState.PLAN_REVIEW, WorkflowState.CODE_REVIEW}:
+            raise HTTPException(status_code=409, detail="Task is terminal or waiting for your review.")
+        if task.status == WorkflowState.FAILED:
+            raise HTTPException(status_code=409, detail="Create a new task after correcting the reported configuration or provider error.")
+        await job_queue.enqueue(task_id, auth.user_id)
+        return {"task_id": task_id, "status": "queued"}
+    except (TaskNotFoundError, TaskAccessDeniedError):
+        raise HTTPException(status_code=404, detail="Task not found.")

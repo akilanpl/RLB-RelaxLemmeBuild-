@@ -37,6 +37,10 @@ class ReviewerService:
         task = await self.workflow.get_task(task_id, user_id)
         existing = await self.repository.get_by_task(task_id)
         if existing is not None:
+            if task.status == WorkflowState.REVIEWING:
+                await self.workflow.transition(task_id, WorkflowState.COMPLETED, ActorType.SYSTEM, None,
+                    "Recovered persisted final review", {"reviewer_report_id": str(existing.id)},
+                    expected_version=task.version)
             return existing
         if task.status != WorkflowState.REVIEWING:
             raise ReviewerExecutionError("Task must be in REVIEWING before Reviewer execution.")

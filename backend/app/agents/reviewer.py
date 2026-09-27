@@ -5,6 +5,7 @@ from typing import Optional
 from backend.app.agents.base import BaseAgent, AgentExecutionContext
 from backend.app.ai.gateway import AIGateway, AIRequest
 from backend.app.models.agent import AgentRole
+from backend.app.models.audit import ReviewerReport
 
 
 class ReviewerAgent(BaseAgent):
@@ -40,7 +41,8 @@ class ReviewerAgent(BaseAgent):
                            "requirements_coverage, behavior_verified, tests_summary, test_failures, "
                            "repair_summary, remaining_risks, unresolved_items, evidence, "
                            "final_status, strengths, concerns, security_audit, recommendation. "
-                           "Use only supplied evidence. Do not assign a score."),
+                           "Use only supplied evidence. Do not assign a score. Schema (omit id, task_id, agent_run_id, created_at): "
+                           + json.dumps(ReviewerReport.model_json_schema())),
             user_prompt=context.user_prompt,
         ))
         data = json.loads(response.content)

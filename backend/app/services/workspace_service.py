@@ -429,9 +429,9 @@ class WorkspaceService:
 
     async def get_workspace(self, workspace_id: UUID, user_id: UUID) -> Workspace:
         """Fetch workspace verifying that user owns it."""
-        ws = _MEMORY_WORKSPACES.get(workspace_id)
-        if not ws:
-            ws = await self._load_workspace_from_db(workspace_id)
+        # Separate Railway processes must see the current canonical pointer.
+        ws = (await self._load_workspace_from_db(workspace_id)
+              if get_sessionmaker() is not None else _MEMORY_WORKSPACES.get(workspace_id))
         if not ws:
             raise WorkspaceNotFoundError(f"Workspace '{workspace_id}' not found.")
         if ws.user_id != user_id:
@@ -476,7 +476,7 @@ class WorkspaceService:
         Enforces user ownership, path validation, and read-only boundaries.
         """
         ws = await self.get_workspace(workspace_id, user_id)
-        clean_rel = relative_path.replace("\\", "/").lstrip("/")
+        clean_rel = self._normalize_import_path(relative_path)
         storage_p = f"{ws.canonical_root_path}/{clean_rel}"
         return await self.storage.read_file(storage_p)
 

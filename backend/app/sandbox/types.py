@@ -1,6 +1,6 @@
 """Sandbox execution types and resource limit specifications."""
 
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from pydantic import BaseModel, Field
 
 
@@ -10,6 +10,7 @@ class SandboxLimits(BaseModel):
     timeout_seconds: int = 600
     disk_limit_mb: int = 10240
     network_enabled: bool = False
+    allowed_domains: List[str] = Field(default_factory=list)
 
 
 class SandboxCommand(BaseModel):

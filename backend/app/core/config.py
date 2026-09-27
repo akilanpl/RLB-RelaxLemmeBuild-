@@ -1,5 +1,6 @@
 """Application configuration management using Pydantic Settings."""
 
+import os
 from functools import lru_cache
 from typing import List, Optional
 from pydantic import Field, model_validator
@@ -13,7 +14,7 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=os.environ.get("RLB_ENV_FILE", ".env"),
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",
@@ -47,10 +48,13 @@ class Settings(BaseSettings):
         default=None,
         description="Supabase service role secret key (backend only)",
     )
-    SUPABASE_QUEUE_NAME: str = "task-execution"
+    SUPABASE_QUEUE_NAME: str = "task_execution"
     SUPABASE_STORAGE_BUCKET: str = "workspace-artifacts"
     DAYTONA_API_URL: Optional[str] = None
     DAYTONA_API_KEY: Optional[str] = None
+    DAYTONA_SANDBOX_IMAGE: Optional[str] = None
+    DAYTONA_TARGET: Optional[str] = None
+    SANDBOX_ALLOWED_DOMAINS: List[str] = Field(default_factory=lambda: ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"])
     SUPABASE_JWT_ISSUER: Optional[str] = Field(
         default=None,
         description="JWT issuer; defaults to the Supabase project's /auth/v1 issuer",
@@ -72,6 +76,9 @@ class Settings(BaseSettings):
         default=None,
         description="32-byte base64 encoded master key for encrypting provider credentials",
     )
+    RUN_EMBEDDED_WORKER: Optional[bool] = None
+    WORKER_POLL_SECONDS: float = Field(default=1.0, gt=0)
+
     MAX_AI_CALLS_PER_TASK: int = Field(default=20, ge=1)
     MAX_AI_OUTPUT_TOKENS: int = Field(default=8192, ge=1)
 
@@ -83,8 +90,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def require_production_database(self) -> "Settings":
-        if self.ENVIRONMENT == "production" and not self.DATABASE_URL:
-            raise ValueError("DATABASE_URL is required when ENVIRONMENT=production.")
+        if self.ENVIRONMENT in {"staging", "production"} and not self.DATABASE_URL:
+            raise ValueError("DATABASE_URL is required for staging and production.")
         if self.SUPABASE_URL:
             url = self.SUPABASE_URL.strip().rstrip("/")
             for suffix in ("/rest/v1", "/auth/v1", "/storage/v1"):

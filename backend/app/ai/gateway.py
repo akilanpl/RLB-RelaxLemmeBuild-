@@ -53,7 +53,7 @@ class QuotaGuardedGateway(AIGateway):
         if request.max_tokens is not None and request.max_tokens > self.max_output_tokens:
             raise AIGatewayError("AI output token limit exceeded.")
         self.calls += 1
-        return await self.gateway.generate(request)
+        return await self.gateway.generate(request.model_copy(update={"max_tokens": request.max_tokens or self.max_output_tokens}))
 
 
 class ProviderGateway(AIGateway):

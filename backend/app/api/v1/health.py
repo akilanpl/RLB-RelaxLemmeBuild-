@@ -82,6 +82,6 @@ async def get_storage_health():
 @router.get("/health/sandbox", response_model=DependencyHealthResponse)
 async def get_sandbox_health():
     settings = get_settings()
-    configured = bool(settings.DAYTONA_API_URL and settings.DAYTONA_API_KEY)
-    return DependencyHealthResponse(status="ok" if configured or settings.ENVIRONMENT != "production" else "degraded",
+    configured = bool(settings.DAYTONA_API_KEY and settings.DAYTONA_SANDBOX_IMAGE)
+    return DependencyHealthResponse(status="configured" if configured else "not_configured",
                                     configured=configured)

@@ -199,6 +199,10 @@ class ApiClient {
   /**
    * Fetches backend process health.
    */
+  async resumeTask(taskId: string): Promise<void> {
+    await this.request(`/api/v1/tasks/${taskId}/resume`, { method: 'POST' });
+  }
+
   async getHealth(): Promise<SystemHealth> {
     return this.request<SystemHealth>('/health');
   }
@@ -418,7 +422,7 @@ class ApiClient {
   /**
    * Lists all files tracked in an approved workspace.
    */
-  async listWorkspaceFiles(workspaceId: string, userId?: string): Promise<any[]> {
+  async listWorkspaceFiles(workspaceId: string, userId?: string): Promise<Array<{ relative_path: string; size_bytes: number }>> {
     const headers: Record<string, string> = {};
     if (userId) {
       headers['x-user-id'] = userId;
@@ -530,12 +534,12 @@ class ApiClient {
   async getWorkspaceAnalysisSummary(
     workspaceId: string,
     userId?: string
-  ): Promise<any> {
+  ): Promise<Record<string, unknown>> {
     const headers: Record<string, string> = {};
     if (userId) {
       headers['x-user-id'] = userId;
     }
-    return this.request<any>(
+    return this.request<Record<string, unknown>>(
       `/api/v1/workspaces/${workspaceId}/analysis/summary`,
       { headers }
     );

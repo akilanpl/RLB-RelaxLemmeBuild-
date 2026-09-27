@@ -274,9 +274,8 @@ export default function WorkspaceIdePage() {
     setBusyLabel('Planner analyzing workspace…');
     setTaskError(null);
     try {
-      const generated = await apiClient.runPlanner(task.id, undefined, user?.id);
-      setPlan(generated);
-      setTask((current) => (current ? { ...current, status: 'plan_review' } : current));
+      await apiClient.resumeTask(task.id);
+      setTask(await apiClient.getTask(task.id, user?.id));
     } catch (err: unknown) {
       setTaskError(err instanceof Error ? err.message : 'Planner execution failed');
     } finally {
@@ -300,12 +299,7 @@ export default function WorkspaceIdePage() {
             }
           : current,
       );
-      if (decision === 'revision_requested') {
-        setBusyLabel('Planner revising plan…');
-        const generated = await apiClient.runPlanner(task.id, feedback, user?.id);
-        setPlan(generated);
-        setTask((current) => (current ? { ...current, status: 'plan_review' } : current));
-      }
+      if (decision === 'revision_requested') setPlan(null);
     } catch (err: unknown) {
       setTaskError(err instanceof Error ? err.message : 'Unable to submit plan decision');
     } finally {
@@ -318,8 +312,8 @@ export default function WorkspaceIdePage() {
     setBusyLabel('Coder generating staged changes…');
     setTaskError(null);
     try {
-      await apiClient.runCoder(task.id, undefined, user?.id);
-      setTask((current) => (current ? { ...current, status: 'code_review' } : current));
+      await apiClient.resumeTask(task.id);
+      setTask(await apiClient.getTask(task.id, user?.id));
     } catch (err: unknown) {
       setTaskError(err instanceof Error ? err.message : 'Coder execution failed');
     } finally {
@@ -543,12 +537,6 @@ export default function WorkspaceIdePage() {
         onChange={(e) => {
           const f = e.target.files?.[0];
           if (f) {
-            console.log('[RLB ZIP DEBUG]', {
-              name: f.name,
-              size: f.size,
-              type: f.type,
-              lastModified: f.lastModified,
-            });
             void handleImportZip(f);
           }
           e.target.value = '';

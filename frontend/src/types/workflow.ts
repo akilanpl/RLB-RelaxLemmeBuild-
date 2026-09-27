@@ -2,7 +2,6 @@
  * Workflow states, approval gates, and task contracts.
  */
 
-import { AgentRole } from './agent';
 import { Diff } from './diff';
 
 export type TaskStatus =

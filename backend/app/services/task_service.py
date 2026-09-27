@@ -106,6 +106,8 @@ class WorkflowEngine:
             raise WorkflowConflictError("Task version is stale.")
         if target not in TRANSITIONS.get(task.status, set()):
             raise InvalidWorkflowTransitionError(f"{task.status.value} -> {target.value} is not allowed.")
+        if actor_type == ActorType.USER and task.user_id != actor_id:
+            raise TaskAccessDeniedError("Task access denied.")
         before = task.version
         transition = TransitionRecord(
                 id=uuid4(), task_id=task_id, previous_state=task.status, new_state=target,
@@ -113,7 +115,7 @@ class WorkflowEngine:
                 metadata=metadata or {}, timestamp=_now(),
                 task_version_before=before, task_version_after=before + 1,
             )
-        updated = await self.repository.transition(task_id, target, transition, expected_version)
+        updated = await self.repository.transition(task_id, target, transition, before if expected_version is None else expected_version)
         if not updated:
             raise WorkflowConflictError("Task version is stale.")
         return updated
@@ -126,6 +128,9 @@ class WorkflowEngine:
         task = await self.get_task(task_id, user_id)
         if task.status not in (WorkflowState.PLAN_REVIEW, WorkflowState.CODE_REVIEW):
             raise InvalidWorkflowTransitionError("Approvals are only allowed at a review gate.")
+        expected_gate = "plan" if task.status == WorkflowState.PLAN_REVIEW else "code"
+        if approval_type != expected_gate or status not in {"approved", "rejected", "revision_requested"}:
+            raise InvalidWorkflowTransitionError("Approval does not match the current review gate.")
         record = ApprovalRecord(id=uuid4(), task_id=task_id, approval_type=approval_type, user_id=user_id, status=status, feedback=feedback, timestamp=_now())
         if status == "approved" and task.status == WorkflowState.PLAN_REVIEW and task.active_staging_workspace_id is None:
             await self._attach_plan_staging(task, user_id)
@@ -153,7 +158,7 @@ class WorkflowEngine:
             await self.workspace_service.get_workspace(task.workspace_id, user_id)
         except WorkspaceNotFoundError:
             return
-        staging = await StagingService(self.workspace_service).create_staging_workspace(
+        staging = await StagingService(self.workspace_service, self.workspace_service.storage).create_staging_workspace(
             task.workspace_id, user_id, task.id
         )
         setter = getattr(self.repository, "set_active_staging", None)
@@ -162,6 +167,9 @@ class WorkflowEngine:
 
     async def create_agent_run(self, task_id: UUID, user_id: UUID, role: AgentRole, **metadata: Any) -> AgentRunRecord:
         await self.get_task(task_id, user_id)
+        prior = await self.repository.list_runs(task_id)
+        if len(prior) >= get_settings().MAX_AI_CALLS_PER_TASK:
+            raise RuntimeError("Task run limit reached. Review the failure history before creating another task.")
         run = AgentRunRecord(
             id=uuid4(),
             task_id=task_id,

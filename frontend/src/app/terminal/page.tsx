@@ -36,8 +36,8 @@ export default function SandboxPage() {
     );
   }
 
-  const healthy = health?.status === 'ok' || health?.configured;
-  const status = error ? 'unreachable' : !health ? 'provisioning' : healthy ? 'ready' : 'not_configured';
+  const healthy = health?.configured === true;
+  const status = error ? 'unreachable' : !health ? 'provisioning' : healthy ? 'configured' : 'not_configured';
 
   return (
     <div className="relative overflow-hidden rounded-[22px] border border-cream/10">
@@ -54,7 +54,7 @@ export default function SandboxPage() {
         </div>
 
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <Info label="Runtime status" value={error ? 'Unreachable' : healthy ? 'Ready' : health?.status || 'Checking'} />
+          <Info label="Runtime status" value={error ? 'Unreachable' : healthy ? 'Configured' : health?.status || 'Checking'} />
           <Info label="Workspace" value="Open from Workspaces" />
           <Info label="Driver" value="Daytona" />
           <Info label="Recent execution" value="Lives with the latest workspace task" />
@@ -66,7 +66,7 @@ export default function SandboxPage() {
           ) : error ? (
             <p className="text-coral">{error}</p>
           ) : (
-            <p>Configured · {health?.configured ? 'yes' : 'local fallback / unset'}</p>
+            <p>Configured · {health?.configured ? 'yes' : 'not configured'}</p>
           )}
         </div>
 

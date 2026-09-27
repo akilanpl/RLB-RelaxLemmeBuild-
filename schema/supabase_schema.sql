@@ -15,10 +15,10 @@ CREATE TYPE task_status AS ENUM (
     'idle', 'analyzing', 'ready', 'planning', 'plan_review', 
     'staging_setup', 'coding', 'code_review', 'staging_cleanup',
     'promoting', 'test_planning', 'test_executing', 'reviewing', 
-    'completed', 'cancelled', 'failed'
+    'completed', 'cancelled', 'failed', 'repairing'
 );
 CREATE TYPE approval_status AS ENUM ('pending', 'approved', 'rejected', 'revision_requested');
-CREATE TYPE execution_status AS ENUM ('queued', 'running', 'completed', 'failed', 'timeout', 'cancelled');
+CREATE TYPE execution_status AS ENUM ('queued', 'running', 'completed', 'failed', 'timeout', 'cancelled', 'success', 'retryable_error', 'blocked', 'rate_limited', 'not_applicable');
 CREATE TYPE baseline_check_type AS ENUM (
     'dependency_install', 'type_check', 'lint', 
     'production_build', 'unit_integration_tests', 'health_check'
@@ -497,9 +497,20 @@ BEGIN
         updated_at = NOW();
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
     AFTER INSERT OR UPDATE ON auth.users
     FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+ALTER TABLE loadouts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE files ENABLE ROW LEVEL SECURITY;
+ALTER TABLE file_metadata ENABLE ROW LEVEL SECURITY;
+ALTER TABLE codebase_analyses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE conversations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE providers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE workers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE agent_runs ALTER COLUMN started_at DROP NOT NULL;

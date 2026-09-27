@@ -1,7 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, CheckCircle2, FileCode2, Loader2, XCircle } from 'lucide-react';
 import { apiClient } from '@/lib/api';
 import type { CodeProposal } from '@/types/diff';
@@ -27,7 +27,7 @@ export default function CodeProposalReview({ taskId, userId, onStatusChange, onA
   const [error, setError] = useState<string>();
   const [actionLabel, setActionLabel] = useState<string>();
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
       setLoading(true);
       setProposals(await apiClient.listCodeProposals(taskId, userId));
@@ -37,18 +37,18 @@ export default function CodeProposalReview({ taskId, userId, onStatusChange, onA
     } finally {
       setLoading(false);
     }
-  };
-  useEffect(() => { void load(); }, [taskId, userId]);
+  }, [taskId, userId]);
+  useEffect(() => { void load(); }, [load]);
 
   const proposal = proposals.find((item) => item.id === selectedId) ?? proposals[0];
-  const diffs = Array.isArray(proposal?.diffs) ? proposal.diffs : [];
+  const diffs = useMemo(() => Array.isArray(proposal?.diffs) ? proposal.diffs : [], [proposal?.diffs]);
   const warnings = Array.isArray(proposal?.warnings) ? proposal.warnings : [];
   const [filePath, setFilePath] = useState<string>();
   const diff = useMemo(
     () => diffs.find((item) => item.file_path === filePath) ?? diffs[0],
     [diffs, filePath],
   );
-  useEffect(() => { setFilePath(diffs[0]?.file_path); }, [proposal?.id]);
+  useEffect(() => { setFilePath(diffs[0]?.file_path); }, [diffs]);
 
   const action = async (kind: 'approve' | 'reject' | 'revision') => {
     if (!proposal) return;

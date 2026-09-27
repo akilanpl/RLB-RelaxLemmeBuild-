@@ -32,6 +32,7 @@ async def apply_schema() -> Dict[str, Any]:
 
     async with engine.begin() as conn:
         # Execute DDL
-        await conn.execute(text(sql_content))
+        raw = (await conn.get_raw_connection()).driver_connection
+        await raw.execute(sql_content)
 
     return {"status": "success", "message": "Schema successfully applied."}

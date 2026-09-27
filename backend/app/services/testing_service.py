@@ -4,7 +4,9 @@ The architect only reads persisted plans.  The executor is deliberately
 dependent on BaseSandboxDriver so commands never run on the application host.
 """
 
+import json
 from datetime import datetime, timezone
+from backend.app.ai.gateway import AIRequest
 from time import monotonic
 from typing import Dict, Iterable, Optional
 from uuid import UUID, uuid4
@@ -26,8 +28,9 @@ def _now():
 
 
 class TestArchitectService:
-    def __init__(self, repository: TestingRepository):
+    def __init__(self, repository: TestingRepository, gateway=None):
         self.repository = repository
+        self.gateway = gateway
 
     async def get_plan(self, task_id: UUID) -> Optional[TestPlan]:
         plans = await self.repository.list_plans(task_id)
@@ -35,7 +38,7 @@ class TestArchitectService:
 
     async def create_plan(
         self, task_id: UUID, agent_run_id: UUID, objective: str,
-        affected_files: Iterable[str] = (),
+        affected_files: Iterable[str] = (), context=None,
     ) -> TestPlan:
         AgentPermissionGatekeeper.assert_tool_permitted(
             AgentRole.TEST_ARCHITECT, "submit_test_plan"
@@ -49,11 +52,35 @@ class TestArchitectService:
             ("edge_case", "Validate invalid and boundary inputs", "Exercise invalid, empty, and boundary inputs.", "Invalid inputs are handled safely."),
             ("security", "Verify authorization boundaries", "Attempt unauthorized access and mutation paths.", "Unauthorized operations are rejected."),
         ]
+        if self.gateway is not None:
+            response = await self.gateway.generate(AIRequest(
+                system_prompt=("You are a read-only test architect. Return only JSON with a test_cases array. "
+                    "Each case must have category (functional, regression, edge_case, security), title, "
+                    "description, expected_result, and test_code. test_code must be an executable shell "
+                    "command that asserts behavior and exits nonzero on failure. Commands run only in "
+                    "an isolated disposable sandbox at /workspace. Do not return echo-only or manual "
+                    "checks. Do not assume secrets or external services exist. Use the supplied source "
+                    "and approved plan. Never change mandatory baseline checks."),
+                user_prompt=json.dumps({"objective": objective, "context": context or {}}),
+            ))
+            generated = json.loads(response.content)
+            raw_cases = generated.get("test_cases", [])
+            if not isinstance(raw_cases, list) or not 1 <= len(raw_cases) <= 20:
+                raise ValueError("Test architect must produce 1–20 executable tests.")
+            test_cases = [TestCase(id=uuid4(), test_plan_id=plan_id, created_at=now, **item)
+                          for item in raw_cases]
+            if any(not case.test_code.strip() for case in test_cases):
+                raise ValueError("Test architect returned an empty command.")
+            return await self.repository.add_plan(TestPlan(
+                id=plan_id, task_id=task_id, agent_run_id=agent_run_id,
+                plan_summary="Executable checks for the approved implementation.",
+                test_cases=test_cases, created_at=now,
+            ))
         test_cases = [
             TestCase(
                 id=uuid4(), test_plan_id=plan_id, category=category,
                 title=title, description=description, expected_result=expected,
-                test_code="echo 'manual test case: " + title.replace("'", "") + "'",
+                test_code="",
                 created_at=now,
             )
             for category, title, description, expected in cases
@@ -141,10 +168,16 @@ class TestExecutorService:
             baseline_failed = bool(failures)
             if not baseline_failed:
                 for case in plan.test_cases:
+                    if not case.test_code.strip():
+                        failed += 1
+                        failures.append(FailedCheckDetail(check_name=case.title,
+                            error_summary="Test is not executable", exit_code=-1,
+                            traceback_or_logs="Configure a test architect worker to generate executable assertions."))
+                        continue
                     result = await self.sandbox.execute_command(
                         sandbox_id, SandboxCommand(cmd=case.test_code, timeout_seconds=self.limits.timeout_seconds)
                     )
-                    if result.exit_code == 0:
+                    if result.exit_code == 0 and not result.timed_out:
                         passed += 1
                     else:
                         failed += 1
@@ -180,7 +213,7 @@ class TestExecutorService:
         result = await self.sandbox.execute_command(
             sandbox_id, SandboxCommand(cmd=command, timeout_seconds=self.limits.timeout_seconds)
         )
-        status = ExecutionStatus.SUCCESS if result.exit_code == 0 else (
+        status = ExecutionStatus.SUCCESS if result.exit_code == 0 and not result.timed_out else (
             ExecutionStatus.TIMEOUT if result.timed_out else ExecutionStatus.FAILED
         )
         return BuildResult(id=uuid4(), test_execution_id=execution_id, check_type=check,

@@ -171,12 +171,9 @@ class StagingService:
             )
 
     async def _load_staging(self, staging_id: UUID) -> Optional[StagingWorkspace]:
-        cached = _MEMORY_STAGING.get(staging_id)
-        if cached is not None:
-            return cached
         sessions = get_sessionmaker()
         if sessions is None:
-            return None
+            return _MEMORY_STAGING.get(staging_id)
         async with sessions() as session:
             row = (
                 await session.execute(

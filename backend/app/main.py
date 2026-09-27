@@ -16,6 +16,7 @@ from backend.app.services.composition import build_agent_services
 from backend.app.api.v1.tasks import configure_agent_services, job_queue, testing_repository
 from backend.app.services.durable_worker import build_default_worker
 from backend.app.services.test_orchestrator import TestOrchestrationService
+from backend.app.services.production_runtime import build_configured_sandbox
 
 
 async def _consume_queue(worker, stop: asyncio.Event) -> None:
@@ -37,6 +38,8 @@ async def _consume_queue(worker, stop: asyncio.Event) -> None:
 async def lifespan(app: FastAPI):
     """Application startup and shutdown events."""
     settings = get_settings()
+    from backend.app.core.preflight import validate_hosted_configuration
+    validate_hosted_configuration("api")
     services = getattr(app.state, "agent_services", None)
     if services and services.resolver and services.resolver.repository:
         try:
@@ -51,8 +54,13 @@ async def lifespan(app: FastAPI):
             )
     stop = asyncio.Event()
     worker_task = None
-    if services is not None:
-        orchestrator = TestOrchestrationService(job_queue.workflow, testing_repository, sandbox=None)
+    sandbox = None
+    embedded = settings.RUN_EMBEDDED_WORKER
+    if embedded is None:
+        embedded = settings.ENVIRONMENT in {"development", "test"}
+    if services is not None and embedded:
+        sandbox = build_configured_sandbox()
+        orchestrator = TestOrchestrationService(job_queue.workflow, testing_repository, sandbox=sandbox, runtime_resolver=services.resolver)
         worker = build_default_worker(
             job_queue,
             os.getenv("WORKER_ID", "local-worker"),
@@ -70,6 +78,10 @@ async def lifespan(app: FastAPI):
             await worker_task
         except asyncio.CancelledError:
             pass
+    if sandbox is not None:
+        await sandbox.client.close()
+    if hasattr(job_queue, "client"):
+        await job_queue.client.close()
 
 
 def create_app() -> FastAPI:
