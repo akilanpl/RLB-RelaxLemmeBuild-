@@ -337,3 +337,5 @@ That's the whole idea. Everything else is implementation detail.
 *An AI engineering operating environment. Not an autocomplete tool.*
 
 </div>
+
+Engineering completion adds safe public GitHub branch import, bounded worker artifact retention, import publication fencing, and stage/recovery limits. Apply hosted migrations through `004_artifact_retention.sql`; see [verification status](docs/ENGINEERING_VERIFICATION.md) and [hosted setup](docs/HOSTED_SETUP.md). Cloud accounts remain intentionally unused pending authorized staging acceptance.

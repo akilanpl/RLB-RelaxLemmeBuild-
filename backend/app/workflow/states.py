@@ -47,7 +47,7 @@ class WorkflowEvent(str, Enum):
 
 
 TRANSITIONS = {
-    WorkflowState.READY: {WorkflowState.ANALYZING, WorkflowState.PLANNING, WorkflowState.CANCELLED},
+    WorkflowState.READY: {WorkflowState.FAILED, WorkflowState.ANALYZING, WorkflowState.PLANNING, WorkflowState.CANCELLED},
     WorkflowState.ANALYZING: {WorkflowState.PLANNING, WorkflowState.FAILED},
     WorkflowState.PLANNING: {WorkflowState.PLAN_REVIEW, WorkflowState.FAILED},
     WorkflowState.PLAN_REVIEW: {WorkflowState.STAGING_SETUP, WorkflowState.PLANNING, WorkflowState.CODING, WorkflowState.CANCELLED},

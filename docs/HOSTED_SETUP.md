@@ -95,7 +95,7 @@ These checks inspect exported variable presence and print **names only**. They d
 - [ ] Confirm failed tests display failures, sandbox timeouts fail, missing configuration never appears as a passing test, and network limits apply in real Daytona.
 - [ ] Verify private Storage, database role privileges, platform logs, limits, costs, and backup/restore procedures.
 
-Known operational limits: real PostgreSQL/pgmq transactions, cloud promotion SQL, Supabase Storage and Daytona have not been exercised against a live account here. A local PostgreSQL startup was blocked by the execution environment's shared-memory restriction. Sandbox output is collected per completed command, not streamed live. Failed uploads can leave unreferenced snapshot objects; automated retention/garbage collection is not implemented. Local in-memory mode loses workflow data when restarted. The full authenticated browser journey requires test Supabase and provider configuration.
+Known operational limits: real PostgreSQL/pgmq transactions, cloud promotion SQL, Supabase Storage and Daytona have not been exercised against a live account here. A local PostgreSQL startup was blocked by the execution environment's shared-memory restriction. Sandbox output is collected per completed command, not streamed live. Failed uploads can leave unreferenced snapshot objects; migration 004 adds bounded worker retention for eligible unreferenced artifacts. Local in-memory mode loses workflow data when restarted. The full authenticated browser journey requires test Supabase and provider configuration.
 
 ## Provider references
 
@@ -116,4 +116,15 @@ Additional non-secret controls: `MAX_REPAIR_ATTEMPTS=3` and `MAX_TASKS_PER_USER_
 
 Daytona sandboxes are deleted after normal execution/cancellation; the SDK request also sets auto-stop at 15 minutes and auto-delete at 60 minutes to bound orphan retention after a process crash. Those settings require live Daytona validation. No image is invented or provided by this repository.
 
-For this pass the existing root `.env` accounts were explicitly left unused, even though Supabase is known non-production. No cloud migrations, smoke-test users, deployments, external AI calls, or Daytona executions were performed. Configure the image and authorize a later staging acceptance pass before deploying migration 003 and the new application together.
+For this pass the existing root `.env` accounts were explicitly left unused, even though Supabase is known non-production. No cloud migrations, smoke-test users, deployments, external AI calls, or Daytona executions were performed. Configure the image and authorize a later staging acceptance pass before deploying migrations 003/004 and the new application together.
+
+
+## Engineering completion: migration 004
+
+Apply `schema/migrations/004_artifact_retention.sql` after 003 before starting the updated API/worker. Startup and readiness require its tables. It adds durable cleanup tombstones/progress, fair scan cursors, permanent published-root references and actual fenced queue-delivery counts. Browser roles cannot access these control tables. The trusted server database role must read `storage.objects`; object deletion still uses the existing private Storage service API.
+
+The Railway worker runs retention independently of its consumer: `ARTIFACT_RETENTION_DAYS=7`, `ARTIFACT_CLEANUP_INTERVAL_SECONDS=3600`. Each pass has a 120-second deadline, considers 20 roots and deletes at most 100 objects per root. Canonical/active/published/audit references always win over age. Tombstones are intentionally permanent. Monitor `artifact_cleanup.last_error`, `last_attempt_at`, `completed_at`, `deleted_objects`, plus structured root/error/count logs. Historical snapshots missing root provenance remain protected. Account/legal audit retention should be defined before adding deletion of published evidence.
+
+`MAX_WORKFLOW_STAGE_SECONDS=1800` bounds each active stage (maximum accepted configuration 7200); approval waiting consumes no execution deadline. Delivery recovery is bounded to three actual fenced claims per message. Sandbox deletion calls time out after 30 seconds; provider-side auto-stop/delete remains the crash cleanup backstop and requires live verification.
+
+No new secret is needed. Public GitHub import requires API egress to `codeload.github.com:443`; redirects, arbitrary hosts, authentication and submodules are not supported. No Git subprocess or imported code runs on the API host. Staging validation must confirm real Storage metadata/listing, deletion/retry, publication fencing, and queue recovery with two workers.

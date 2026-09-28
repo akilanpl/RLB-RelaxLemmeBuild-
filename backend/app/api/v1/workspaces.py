@@ -12,7 +12,7 @@ from backend.app.services.workspace_service import (
     WorkspaceAccessDeniedError,
 )
 from backend.app.services.staging_service import StagingService
-from backend.app.services.zip_import import ZipValidationError
+from backend.app.services.zip_import import ZipValidationError, ZipImportService
 from backend.app.analysis.service import CodebaseAnalysisService
 from backend.app.analysis.types import (
     CodebaseAnalysisResult,
@@ -25,6 +25,13 @@ from backend.app.services.runtime import RuntimeRef
 workspace_service = RuntimeRef("workspace")
 staging_service = RuntimeRef("staging")
 analysis_service = RuntimeRef("analysis")
+
+async def _read_upload(upload: UploadFile, limit: int) -> bytes:
+    content = await upload.read(limit + 1)
+    if len(content) > limit:
+        raise HTTPException(413, "Import exceeds size quota.")
+    return content
+
 
 class FileContentResponse(BaseModel):
     path: str
@@ -55,7 +62,7 @@ async def create_workspace(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid file type. Only .zip archives are supported.",
             )
-        zip_bytes = await file.read()
+        zip_bytes = await _read_upload(file, ZipImportService.MAX_ZIP_BYTES)
 
     try:
         ws = await workspace_service.create_workspace(
@@ -80,7 +87,7 @@ async def create_workspace(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Workspace provisioning failed: {str(e)}",
+            detail="Workspace provisioning failed.",
         )
 
 
@@ -149,7 +156,7 @@ async def read_workspace_file_content(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unable to read file: {str(e)}",
+            detail="Unable to read the requested file.",
         )
 
 
@@ -162,7 +169,7 @@ async def import_project_zip(
     """Import a ZIP into an empty owned workspace. Refuses non-empty approved trees."""
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only .zip archives are supported.")
-    zip_bytes = await file.read()
+    zip_bytes = await _read_upload(file, ZipImportService.MAX_ZIP_BYTES)
     try:
         ws = await workspace_service.import_project_into_empty_workspace(
             workspace_id, auth.user_id, zip_bytes=zip_bytes
@@ -180,6 +187,31 @@ async def import_project_zip(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
+class RepositoryImportRequest(BaseModel):
+    url: str
+    branch: str = "main"
+
+
+@router.post("/{workspace_id}/import/repository", response_model=Workspace)
+async def import_public_repository(workspace_id: UUID, request: RepositoryImportRequest,
+                                   auth: AuthenticatedUserContext = Depends(get_authenticated_user)):
+    # Authenticate ownership before making any network request.
+    workspace = await workspace_service.get_workspace(workspace_id, auth.user_id)
+    if workspace.file_count:
+        raise HTTPException(409, "Repository import requires an empty workspace.")
+    from backend.app.services.repository_import import public_repository_files
+    import asyncio
+    import httpx
+    try:
+        async with asyncio.timeout(60):
+            files = await public_repository_files(request.url, request.branch)
+        return await workspace_service.import_project_into_empty_workspace(workspace_id, auth.user_id, files=files)
+    except ZipValidationError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except (httpx.HTTPError, TimeoutError) as exc:
+        raise HTTPException(502, "Repository download failed or timed out.") from exc
+
+
 @router.post("/{workspace_id}/import/files", response_model=Workspace)
 async def import_project_files(
     workspace_id: UUID,
@@ -190,11 +222,16 @@ async def import_project_files(
     """Import loose files/folders into an empty owned workspace with path validation."""
     if len(files) != len(paths):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="files and paths must have the same length.")
+    if len(files) > ZipImportService.MAX_FILE_COUNT:
+        raise HTTPException(413, "Too many imported files.")
+    remaining = ZipImportService.MAX_UNCOMPRESSED_BYTES
     payload: List[Dict[str, Any]] = []
     for upload, relative_path in zip(files, paths):
+        content = await _read_upload(upload, remaining)
+        remaining -= len(content)
         payload.append({
             "relative_path": relative_path,
-            "content": await upload.read(),
+            "content": content,
         })
     try:
         ws = await workspace_service.import_project_into_empty_workspace(
@@ -236,6 +273,11 @@ async def discard_staging_workspace(
     """Discard an ephemeral staging workspace."""
     user_id = auth.user_id
     try:
+        staging = await staging_service.get_staging_workspace(staging_id, user_id)
+        if staging.workspace_id != workspace_id:
+            raise HTTPException(404, "Staging workspace not found.")
+        if staging.task_id is not None:
+            raise HTTPException(409, "Task-linked staging is managed by the workflow.")
         await staging_service.discard_staging_workspace(staging_id, user_id)
     except KeyError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Staging workspace not found.")
@@ -265,7 +307,7 @@ async def trigger_workspace_analysis(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Analysis failed: {str(e)}",
+            detail="Analysis failed.",
         )
 
 

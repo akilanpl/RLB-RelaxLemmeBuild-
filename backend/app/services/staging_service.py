@@ -136,7 +136,8 @@ class StagingService:
         staging.discarded_at = datetime.now(timezone.utc)
         _MEMORY_STAGING[staging_id] = staging
         await self._persist_staging(staging)
-        await self.storage.delete_directory(staging.staging_root_path)
+        if staging.task_id is None:
+            await self.storage.delete_directory(staging.staging_root_path)
 
     async def _persist_staging(self, staging: StagingWorkspace) -> None:
         sessions = get_sessionmaker()

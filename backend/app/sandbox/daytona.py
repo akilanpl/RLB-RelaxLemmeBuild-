@@ -1,5 +1,6 @@
 """Daytona sandbox adapter. The SDK client is injected to keep tests offline."""
 
+import asyncio
 from typing import Any, AsyncIterator
 from uuid import UUID
 
@@ -23,7 +24,7 @@ class DaytonaSandboxDriver(BaseSandboxDriver):
             await self.client.restore_snapshot(sandbox, staging_root_path, "/workspace")
             return sandbox.id
         except BaseException:
-            await self.client.destroy(sandbox.id)
+            await self.destroy_sandbox(sandbox.id)
             raise
 
     async def execute_command(self, sandbox_id: str, command: SandboxCommand) -> SandboxExecutionResult:
@@ -46,4 +47,4 @@ class DaytonaSandboxDriver(BaseSandboxDriver):
             yield line
 
     async def destroy_sandbox(self, sandbox_id: str) -> None:
-        await self.client.destroy(sandbox_id)
+        await asyncio.wait_for(self.client.destroy(sandbox_id), timeout=30)

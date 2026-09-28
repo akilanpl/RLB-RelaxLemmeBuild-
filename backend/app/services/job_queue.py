@@ -61,6 +61,7 @@ class LocalJobQueue:
             if existing:
                 if existing.status == JobStatus.WAITING:
                     existing.status = JobStatus.PENDING
+                    existing.attempts = 0
                 return existing
             job = Job(uuid4(), task_id, user_id)
             self.jobs[job.id] = job

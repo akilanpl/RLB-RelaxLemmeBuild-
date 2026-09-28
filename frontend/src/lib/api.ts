@@ -451,6 +451,17 @@ class ApiClient {
     );
   }
 
+  async importWorkspaceRepository(workspaceId: string, url: string, branch: string): Promise<Workspace> {
+    const workspace = normalizeWorkspace(await this.request<unknown>(
+      `/api/v1/workspaces/${workspaceId}/import/repository`, {
+        method: 'POST', body: JSON.stringify({ url, branch }),
+        headers: { 'Content-Type': 'application/json' },
+      }
+    ));
+    if (!workspace) throw new ApiError(502, 'Bad Gateway', 'Import response was malformed.');
+    return workspace;
+  }
+
   async importWorkspaceZip(workspaceId: string, file: File, userId?: string): Promise<Workspace> {
     const formData = new FormData();
     formData.append('file', file);

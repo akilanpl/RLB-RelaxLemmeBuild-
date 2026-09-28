@@ -75,9 +75,9 @@ async def promote_snapshot(sessions, storage, workspace, staging, proposal, task
             VALUES (:id,:task,'system','workflow',:line,:now)'''),
             {'id': uuid4(), 'task': task.id, 'line': transition.model_dump_json(), 'now': now})
         await session.execute(text('''INSERT INTO git_snapshots
-            (id,workspace_id,task_id,commit_sha,tree_sha,parent_commit_sha,message)
-            VALUES (:id,:workspace,:task,:hash,:hash,:parent,:message)'''),
+            (id,workspace_id,task_id,commit_sha,tree_sha,parent_commit_sha,message,artifact_root_path)
+            VALUES (:id,:workspace,:task,:hash,:hash,:parent,:message,:root)'''),
             {'id': uuid4(), 'workspace': workspace.id, 'task': task.id, 'hash': snapshot,
-             'parent': workspace.current_snapshot_hash, 'message': proposal.commit_message})
+             'parent': workspace.current_snapshot_hash, 'message': proposal.commit_message, 'root': root})
     return {'proposal_id': proposal.id, 'new_snapshot_hash': snapshot,
             'files_applied': len(files), 'is_successful': True}

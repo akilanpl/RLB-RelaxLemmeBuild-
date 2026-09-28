@@ -97,14 +97,14 @@ class TestOrchestrationService:
             return execution
         except Exception as exc:
             await self.workflow.update_agent_run(
-                executor_run.id, ExecutionStatus.FAILED, error_message=str(exc)
+                executor_run.id, ExecutionStatus.FAILED, error_message=type(exc).__name__
             )
             current = await self.workflow.get_task(task_id, user_id)
             from backend.app.services.durable_worker import _transient
             if current.status == WorkflowState.TEST_EXECUTING and not _transient(exc):
                 await self.workflow.transition(
                     task_id, WorkflowState.FAILED, ActorType.SYSTEM, None,
-                    "Sandbox execution failed", {"error": str(exc)},
+                    "Sandbox execution failed", {"error": type(exc).__name__},
                     expected_version=current.version,
                 )
             raise

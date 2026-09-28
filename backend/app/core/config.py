@@ -80,6 +80,10 @@ class Settings(BaseSettings):
     RUN_EMBEDDED_WORKER: Optional[bool] = None
     WORKER_POLL_SECONDS: float = Field(default=1.0, gt=0)
 
+    MAX_WORKFLOW_STAGE_SECONDS: int = Field(default=1800, ge=1, le=7200)
+    ARTIFACT_RETENTION_DAYS: int = Field(default=7, ge=1)
+    ARTIFACT_CLEANUP_INTERVAL_SECONDS: int = Field(default=3600, ge=60)
+
     MAX_REPAIR_ATTEMPTS: int = Field(default=3, ge=0, le=20)
     MAX_TASKS_PER_USER_PER_HOUR: int = Field(default=30, ge=1)
 
