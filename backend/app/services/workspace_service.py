@@ -107,6 +107,7 @@ class WorkspaceService:
                         :git_remote_url, :is_archived, :created_at, :updated_at
                     )
                     ON CONFLICT (id) DO UPDATE SET
+                        canonical_root_path = EXCLUDED.canonical_root_path,
                         name = EXCLUDED.name,
                         description = EXCLUDED.description,
                         status = EXCLUDED.status,
@@ -307,7 +308,7 @@ class WorkspaceService:
             await self.storage.delete_directory(canonical_prefix)
             if isinstance(e, ZipValidationError):
                 raise
-            raise ZipValidationError(f"Import failed during extraction: {str(e)}")
+            raise ZipValidationError("Import failed during extraction.") from e
 
         workspace = Workspace(
             id=workspace_id,
@@ -495,7 +496,15 @@ class WorkspaceService:
             raise ZipValidationError(f"Unsupported metadata path: '{raw_path}'")
         return normalized
 
-    async def import_project_into_empty_workspace(
+    async def import_project_into_empty_workspace(self, workspace_id, user_id, *, zip_bytes=None, files=None):
+        from backend.app.services.workspace_lock import workspace_import_lock
+        import asyncio
+        async with asyncio.timeout(600):
+            async with workspace_import_lock(workspace_id):
+                return await self._import_project_into_empty_workspace(
+                    workspace_id, user_id, zip_bytes=zip_bytes, files=files)
+
+    async def _import_project_into_empty_workspace(
         self,
         workspace_id: UUID,
         user_id: UUID,
@@ -552,10 +561,11 @@ class WorkspaceService:
 
         file_records: List[Dict[str, Any]] = []
         total_bytes = 0
+        root = f"workspaces/{workspace_id}/snapshots/{uuid.uuid4()}"
         for item in extracted:
             rel_p = item["relative_path"]
             content = item["content"]
-            storage_p = f"{ws.canonical_root_path}/{rel_p}"
+            storage_p = f"{root}/{rel_p}"
             await self.storage.write_file(storage_p, content)
             total_bytes += item["size_bytes"]
             file_records.append({
@@ -569,13 +579,14 @@ class WorkspaceService:
             })
 
         updated = ws.model_copy(update={
+            "canonical_root_path": root,
             "file_count": len(file_records),
             "total_size_bytes": total_bytes,
             "status": WorkspaceStatus.READY,
             "current_snapshot_hash": f"import-{str(workspace_id)[:8]}",
             "updated_at": datetime.now(timezone.utc),
         })
+        await self._persist_workspace(updated, file_records)
         _MEMORY_WORKSPACES[workspace_id] = updated
         _MEMORY_FILES[workspace_id] = file_records
-        await self._persist_workspace(updated, file_records)
         return updated

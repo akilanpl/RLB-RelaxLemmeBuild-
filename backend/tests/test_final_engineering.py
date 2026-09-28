@@ -164,7 +164,7 @@ async def test_golden_import_approval_failure_repair_recovery(tmp_path, monkeypa
             if file.is_file():
                 zipped.writestr(str(file.relative_to(fixture)), file.read_bytes())
     # Use the actual import service contract, not prefilled task/proposal state.
-    await workspaces.import_project_into_empty_workspace(workspace.id, owner, zip_bytes=archive.getvalue())
+    workspace = await workspaces.import_project_into_empty_workspace(workspace.id, owner, zip_bytes=archive.getvalue())
     workspace = await workspaces.sync_canonical_metadata(workspace)
     assert workspace.file_count >= 3
     planner = PlannerService(Gateway(plan_json()), workflow=workflow)

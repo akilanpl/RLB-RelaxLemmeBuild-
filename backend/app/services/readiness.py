@@ -28,6 +28,10 @@ async def readiness():
         async with asyncio.timeout(5):
             async with get_engine().connect() as conn:
                 await conn.execute(text('SELECT ai_call_count FROM tasks LIMIT 0'))
+                await conn.execute(text('SELECT root_path FROM artifact_cleanup LIMIT 0'))
+                await conn.execute(text('SELECT artifact_root_path FROM git_snapshots LIMIT 0'))
+                await conn.execute(text('SELECT attempts FROM queue_delivery_attempts LIMIT 0'))
+                await conn.execute(text('SELECT root_path FROM artifact_audit_roots LIMIT 0'))
                 result['database'] = 'ready'
                 queues = (await conn.execute(text('SELECT queue_name FROM pgmq.list_queues()'))).scalars().all()
                 result['queue'] = 'ready' if settings.SUPABASE_QUEUE_NAME in queues else 'missing'

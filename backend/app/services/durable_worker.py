@@ -44,6 +44,9 @@ class DurableTaskWorker:
         if job is None:
             return None
         try:
+            if job.attempts > 3:
+                await _mark_failed(self.queue.workflow, job, RuntimeError('Worker recovery retry limit exhausted.'))
+                return await self.queue.complete(job.id, self.worker_id)
             while True:
                 task = await self.queue.workflow.get_task(job.task_id, job.user_id)
                 if task.status in {WorkflowState.CANCELLED, WorkflowState.COMPLETED, WorkflowState.FAILED}:
@@ -60,7 +63,10 @@ class DurableTaskWorker:
         except Exception as exc:
             # A lost lease must not overwrite the new owner's job or mask the
             # original exception with a second lease failure.
-            with suppress(RuntimeError):
+            with suppress(Exception):
+                await self.queue.heartbeat(job.id, self.worker_id)
+                if not _transient(exc):
+                    await _mark_failed(self.queue.workflow, job, exc)
                 if _transient(exc) and job.attempts < 3:
                     await self.queue.release(job.id, self.worker_id)
                 else:
@@ -78,7 +84,9 @@ class DurableTaskWorker:
                 if task.status == WorkflowState.CANCELLED:
                     raise TaskCancelled('Task cancelled by user.')
 
-        stage = asyncio.create_task(handler(job))
+        from backend.app.core.config import get_settings
+        stage = asyncio.create_task(asyncio.wait_for(
+            handler(job), timeout=get_settings().MAX_WORKFLOW_STAGE_SECONDS))
         heartbeat = asyncio.create_task(renew())
         try:
             done, _ = await asyncio.wait({stage, heartbeat}, return_when=asyncio.FIRST_COMPLETED)
@@ -104,7 +112,7 @@ async def _mark_failed(workflow, job, exc: Exception) -> None:
         return
     await workflow.transition(
         task.id, WorkflowState.FAILED, ActorType.SYSTEM, None,
-        str(exc) or "Workflow step failed",
+        type(exc).__name__ + ": workflow step failed",
         expected_version=task.version,
     )
 

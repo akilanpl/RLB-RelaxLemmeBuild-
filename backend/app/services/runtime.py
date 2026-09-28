@@ -41,6 +41,13 @@ class Runtime:
         from backend.app.core.config import get_settings
         if get_settings().ENVIRONMENT in {'staging', 'production'}:
             from urllib.parse import quote
+            from sqlalchemy import text
+            from backend.app.db.session import get_engine
+            async with get_engine().connect() as connection:
+                await connection.execute(text('SELECT root_path FROM artifact_cleanup LIMIT 0'))
+                await connection.execute(text('SELECT root_path FROM artifact_audit_roots LIMIT 0'))
+                await connection.execute(text('SELECT attempts FROM queue_delivery_attempts LIMIT 0'))
+                await connection.execute(text('SELECT artifact_root_path FROM git_snapshots LIMIT 0'))
             storage = self.workspace.storage
             bucket = (await storage.client._request('GET', '/bucket/' + quote(storage.bucket, safe=''))).json()
             if bucket.get('public') is not False:

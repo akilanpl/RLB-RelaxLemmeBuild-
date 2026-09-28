@@ -32,6 +32,8 @@ export default function NewWorkspacePage() {
   const [projectSource, setProjectSource] = useState<Source>('empty');
   const [importKind, setImportKind] = useState<ImportKind>('archive');
   const [gitUrl, setGitUrl] = useState('');
+  const [gitBranch, setGitBranch] = useState('main');
+  const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string | null>(null);
   const [templateId, setTemplateId] = useState('next');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [deviceEntries, setDeviceEntries] = useState<ImportEntry[]>([]);
@@ -86,16 +88,24 @@ export default function NewWorkspacePage() {
       setError('Choose files or a folder to import, or switch to Empty.');
       return;
     }
+    if (projectSource === 'zip' && importKind === 'git' && (!gitUrl.trim() || !gitBranch.trim())) {
+      setError('Provide a public GitHub repository URL and branch.');
+      return;
+    }
     setIsSubmitting(true);
     try {
       const formData = new FormData();
       formData.append('name', name.trim());
       if (description.trim()) formData.append('description', description.trim());
       formData.append('environment_mode', environmentMode);
+      const created = pendingWorkspaceId ? { id: pendingWorkspaceId } : await apiClient.createWorkspace(formData, user?.id);
+      setPendingWorkspaceId(created.id);
       if (projectSource === 'zip' && importKind === 'archive' && selectedFile) {
-        formData.append('file', selectedFile);
+        await apiClient.importWorkspaceZip(created.id, selectedFile, user?.id);
       }
-      const created = await apiClient.createWorkspace(formData, user?.id);
+      if (projectSource === 'zip' && importKind === 'git') {
+        await apiClient.importWorkspaceRepository(created.id, gitUrl.trim(), gitBranch.trim());
+      }
       if (projectSource === 'zip' && importKind === 'device' && deviceEntries.length > 0) {
         await apiClient.importWorkspaceFiles(created.id, deviceEntries, user?.id);
       }
@@ -137,7 +147,7 @@ export default function NewWorkspacePage() {
 
       <form onSubmit={handleSubmit} className="space-y-6">
         <div className="grid gap-3 md:grid-cols-3">
-          <Choice title="Import" body="ZIP, files, or a git URL note" active={projectSource === 'zip'} onClick={() => setProjectSource('zip')} />
+          <Choice title="Import" body="ZIP, files, or public GitHub repository" active={projectSource === 'zip'} onClick={() => setProjectSource('zip')} />
           <Choice
             title="Template"
             body="Visually rich starters"
@@ -180,8 +190,12 @@ export default function NewWorkspacePage() {
                     placeholder="https://github.com/you/project.git"
                   />
                 </label>
+                <label className="mt-3 block text-xs text-cream/60">
+                  Branch
+                  <Input className="mt-1.5 bg-paper" value={gitBranch} onChange={(e) => setGitBranch(e.target.value)} placeholder="main" />
+                </label>
                 <p className="mt-2 text-xs text-cream/45">
-                  Git clone is not part of the current create contract. RLB will open an empty workspace — import a ZIP of the repo to bring files in.
+                  Imports a public GitHub branch snapshot. Private repositories and submodules are unsupported.
                 </p>
               </div>
             ) : importKind === 'device' ? (
@@ -241,7 +255,7 @@ export default function NewWorkspacePage() {
                   <>
                     <Upload className="mx-auto h-8 w-8 text-gold" />
                     <p className="mt-3 text-lg font-semibold text-cream">Drop a ZIP here</p>
-                    <p className="mt-1 text-sm text-cream/55">.zip only · up to 25 MB. tar/git clone are not supported yet.</p>
+                    <p className="mt-1 text-sm text-cream/55">.zip only · up to 25 MB. For public GitHub projects, use Git Repository.</p>
                     <label className="mt-5 inline-flex cursor-pointer rounded-[12px] bg-paper px-5 py-2 text-sm font-semibold text-ink">
                       Choose ZIP
                       <input type="file" accept=".zip,application/zip" className="sr-only" onChange={(e) => takeFile(e.target.files?.[0])} />

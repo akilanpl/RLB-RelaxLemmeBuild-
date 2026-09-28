@@ -31,6 +31,9 @@ async def run_worker() -> None:
         while True:
             await record_worker_heartbeat(worker.worker_id)
             await asyncio.sleep(20)
+    from backend.app.services.artifact_cleanup import cleanup_loop
+    from backend.app.db.session import get_engine
+    cleanup_task = asyncio.create_task(cleanup_loop(get_engine(), runtime.workspace.storage, settings))
     heartbeat_task = asyncio.create_task(heartbeat())
     consumer_task = asyncio.create_task(_consume(worker, services, settings))
     try:
@@ -38,9 +41,10 @@ async def run_worker() -> None:
         for completed in done:
             await completed
     finally:
+        cleanup_task.cancel()
         heartbeat_task.cancel()
         consumer_task.cancel()
-        await asyncio.gather(heartbeat_task, consumer_task, return_exceptions=True)
+        await asyncio.gather(cleanup_task, heartbeat_task, consumer_task, return_exceptions=True)
         await runtime.close()
 
 

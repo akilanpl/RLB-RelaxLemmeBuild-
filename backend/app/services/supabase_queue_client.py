@@ -52,11 +52,15 @@ class SupabaseQueueClient:
                 await conn.execute(text('SELECT pgmq.set_vt(:name, :id, 5)'), {'name': name, 'id': receipt})
                 await conn.commit()
                 return None
+            attempts = (await conn.execute(text('''INSERT INTO queue_delivery_attempts (queue_name,receipt,attempts)
+                VALUES (:name,:receipt,1) ON CONFLICT(queue_name,receipt)
+                DO UPDATE SET attempts=queue_delivery_attempts.attempts+1 RETURNING attempts'''),
+                {'name': name, 'receipt': receipt})).scalar()
             await conn.commit()
             self.claims[receipt] = (conn, worker)
             retained = True
             return {'receipt': receipt, 'message': payload, 'user_id': task['user_id'],
-                    'attempts': row['read_ct']}
+                    'attempts': attempts}
         finally:
             if not retained:
                 try:
