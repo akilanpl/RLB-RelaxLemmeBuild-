@@ -16,6 +16,8 @@ export interface TestPlan {
 }
 
 export interface TestExecution {
+  status?: string;
+  command_results?: Array<{ command: string; status: string; stdout: string; stderr: string; duration_ms: number }>;
   id: string;
   task_id: string;
   all_passed: boolean;

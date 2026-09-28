@@ -27,6 +27,7 @@ class ExecutionStatus(str, Enum):
     BLOCKED = "blocked"
     RATE_LIMITED = "rate_limited"
     NOT_APPLICABLE = "not_applicable"
+    UNAVAILABLE = "unavailable"
 
 
 class AgentRun(BaseModel):

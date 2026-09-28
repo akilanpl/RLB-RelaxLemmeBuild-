@@ -28,6 +28,7 @@ class TaskRecord(BaseModel):
     status: WorkflowState = WorkflowState.READY
     version: int = 1
     approved_snapshot_hash: Optional[str] = None
+    approved_proposal_id: Optional[UUID] = None
     active_loadout_id: Optional[UUID] = None
     worker_overrides: Dict[str, str] = Field(default_factory=dict)
     active_staging_workspace_id: Optional[UUID] = None

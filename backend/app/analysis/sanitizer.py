@@ -4,6 +4,9 @@ import re
 
 # Common sensitive credential patterns to redact
 SECRET_PATTERNS = [
+    (re.compile(r"\bsk-[a-zA-Z0-9_-]+\b"), "[REDACTED_API_KEY]"),
+    (re.compile(r"\b(?:GROQ_|OPENAI_)[A-Z0-9_]+\b"), "[REDACTED_CREDENTIAL]"),
+    (re.compile(r"Bearer\s+[a-zA-Z0-9._~+/-]+", re.IGNORECASE), "[REDACTED_AUTHORIZATION]"),
     # Generic API Keys (e.g. sk-..., gsk-..., ghp-...)
     (re.compile(r"\b(sk-[a-zA-Z0-9_-]{20,})\b"), "[REDACTED_API_KEY]"),
     (re.compile(r"\b(gsk_[a-zA-Z0-9_-]{20,})\b"), "[REDACTED_GROQ_KEY]"),

@@ -19,6 +19,12 @@ def validate_hosted_configuration(role='api'):
     if missing:
         raise RuntimeError('Missing hosted configuration: ' + ', '.join(missing))
     if settings.ENVIRONMENT in {'staging', 'production'}:
+        from backend.app.services.credential_service import CredentialService
+        CredentialService(settings.CREDENTIAL_ENCRYPTION_KEY)
+        if settings.RUN_EMBEDDED_WORKER:
+            raise RuntimeError('Hosted API and worker must run as separate processes.')
+        if not settings.BACKEND_CORS_ORIGINS or '*' in settings.BACKEND_CORS_ORIGINS:
+            raise RuntimeError('Hosted CORS must contain explicit allowed origins.')
         parsed = urlparse(settings.DATABASE_URL)
         if parsed.port == 6543:
             raise RuntimeError('Supabase Queue workers require a direct or session-pooler DATABASE_URL (port 5432), not transaction pooling.')

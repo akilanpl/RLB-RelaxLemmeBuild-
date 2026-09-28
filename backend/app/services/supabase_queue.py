@@ -16,6 +16,7 @@ class SupabaseQueueAdapter:
         self.workflow = workflow
         self.lease_seconds = 60
         self._jobs = {}
+        self._completed = {}
 
     @staticmethod
     def message(task_id: UUID, task_version: int, requested_at: Optional[datetime] = None) -> dict:
@@ -64,10 +65,16 @@ class SupabaseQueueAdapter:
     async def complete(self, job_id, worker_id=None):
         if self.workflow is None:
             return await self.client.ack(self.queue_name, job_id)
+        previous = self._completed.get((job_id, worker_id))
+        if previous is not None:
+            return previous
         job, receipt = self._owned(job_id, worker_id)
         await self.client.ack(self.queue_name, receipt)
         self._jobs.pop(job_id)
         job.status = JobStatus.COMPLETED
+        self._completed[(job_id, worker_id)] = job
+        if len(self._completed) > 1024:
+            self._completed.pop(next(iter(self._completed)))
         return job
 
     async def fail(self, job_id, worker_id, error=None):
@@ -75,12 +82,25 @@ class SupabaseQueueAdapter:
             return await self.client.release(self.queue_name, job_id, worker_id)
         job, receipt = self._owned(job_id, worker_id)
         if job.attempts >= 3:
+            from backend.app.workflow.states import WorkflowState, TRANSITIONS
+            from backend.app.models.task import ActorType
+            task = await self.workflow.get_task(job.task_id, job.user_id)
+            if WorkflowState.FAILED in TRANSITIONS.get(task.status, set()):
+                await self.workflow.transition(task.id, WorkflowState.FAILED, ActorType.SYSTEM, None,
+                    'Worker delivery retry limit exhausted.', expected_version=task.version)
             await self.client.ack(self.queue_name, receipt)
         else:
             await self.client.release(self.queue_name, receipt, error)
         self._jobs.pop(job_id)
         job.status = JobStatus.FAILED
         job.error = error
+        return job
+
+    async def release(self, job_id, worker_id):
+        job, receipt = self._owned(job_id, worker_id)
+        await self.client.release(self.queue_name, receipt, 'retry')
+        self._jobs.pop(job_id)
+        job.status = JobStatus.PENDING
         return job
 
     async def wait_for_approval(self, job_id, worker_id=None):

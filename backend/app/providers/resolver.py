@@ -42,6 +42,7 @@ class RuntimeResolver:
                  max_calls: int = 20, max_output_tokens: int = 8192):
         self.credential_service = credential_service or CredentialService()
         self.repository = repository
+        self.workflow = None
         self.max_calls = max_calls
         self.max_output_tokens = max_output_tokens
         self.workers: dict[str, Worker] = {}
@@ -85,6 +86,7 @@ class RuntimeResolver:
         self.workers, self.credentials, self.loadouts, self.active_loadouts = (
             workers, credentials, loadouts, active
         )
+        self.overrides.clear()
         far_future = datetime.max.replace(tzinfo=timezone.utc)
         for row in configuration.get("task_overrides") or []:
             raw = row.get("worker_overrides") or {}
@@ -189,24 +191,31 @@ class RuntimeResolver:
                 worker_id, override_id = candidate, candidate
             else:
                 self.overrides.pop((task_id, role), None)
+        from backend.app.ai.failover import FailoverGateway
         worker = self._validate_worker(user_id, worker_id)
-        credential = self.credentials[(user_id, worker.provider_id)]
-        adapter_type = ADAPTER_REGISTRY.get(worker.provider_id)
-        if adapter_type is None:
-            raise LookupError("Provider adapter is not registered")
-        adapter = adapter_type(self.credential_service)
+        candidates = []
+        for candidate in dict.fromkeys([worker_id, *mapping.fallback_worker_ids]):
+            selected_worker = self._validate_worker(user_id, candidate)
+            credential = self.credentials[(user_id, selected_worker.provider_id)]
+            adapter_type = ADAPTER_REGISTRY.get(selected_worker.provider_id)
+            if adapter_type is None:
+                raise LookupError("Provider adapter is not registered")
+            candidates.append(({'worker_id': selected_worker.id, 'provider_id': selected_worker.provider_id,
+                                'model_name': selected_worker.model_name},
+                ProviderGateway(adapter_type(self.credential_service), credential, selected_worker.model_name)))
+        async def reserve():
+            await self.workflow.reserve_ai_call(task_id, user_id)
+        async def record(evidence):
+            await self.workflow.repository.record_provider_call(task_id, {**evidence, 'role': role})
+        resolved = FailoverGateway(candidates, reserve if self.workflow else None,
+                                   record if self.workflow else None)
         gateway_key = (task_id, role, loadout.id, worker.id)
         gateway = self._quota_gateways.get(gateway_key)
         if gateway is None:
-            gateway = QuotaGuardedGateway(
-                ProviderGateway(adapter, credential, worker.model_name),
-                self.max_calls,
-                self.max_output_tokens,
-            )
+            gateway = QuotaGuardedGateway(resolved, self.max_calls, self.max_output_tokens)
             self._quota_gateways[gateway_key] = gateway
         else:
-            # Refresh rotated credentials/models without resetting the task quota.
-            gateway.gateway = ProviderGateway(adapter, credential, worker.model_name)
+            gateway.gateway = resolved
         return ResolvedRuntime(
             role=role,
             worker_id=worker.id,

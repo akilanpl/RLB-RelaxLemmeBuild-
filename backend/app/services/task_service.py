@@ -19,6 +19,10 @@ from backend.app.core.config import get_settings
 from backend.app.repositories.task import PostgresTaskRepository
 
 
+class TaskRateLimitError(RuntimeError):
+    pass
+
+
 class TaskNotFoundError(KeyError):
     pass
 
@@ -35,18 +39,7 @@ class InvalidWorkflowTransitionError(ValueError):
     pass
 
 
-TRANSITIONS = {
-    WorkflowState.READY: {WorkflowState.PLANNING, WorkflowState.CANCELLED},
-    WorkflowState.PLANNING: {WorkflowState.PLAN_REVIEW, WorkflowState.FAILED},
-    WorkflowState.PLAN_REVIEW: {WorkflowState.PLANNING, WorkflowState.CODING, WorkflowState.CANCELLED},
-    WorkflowState.CODING: {WorkflowState.CODE_REVIEW, WorkflowState.FAILED},
-    WorkflowState.CODE_REVIEW: {WorkflowState.CODING, WorkflowState.TEST_PLANNING, WorkflowState.CANCELLED},
-    WorkflowState.TEST_PLANNING: {WorkflowState.TEST_EXECUTING, WorkflowState.FAILED},
-    WorkflowState.TEST_EXECUTING: {WorkflowState.REPAIRING, WorkflowState.REVIEWING, WorkflowState.FAILED},
-    WorkflowState.REPAIRING: {WorkflowState.CODING, WorkflowState.FAILED},
-    WorkflowState.REVIEWING: {WorkflowState.COMPLETED, WorkflowState.FAILED},
-    WorkflowState.COMPLETED: {WorkflowState.READY},
-}
+from backend.app.workflow.states import TRANSITIONS
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -124,7 +117,7 @@ class WorkflowEngine:
         await self.get_task(task_id, user_id)
         return await self.repository.history(task_id)
 
-    async def record_approval(self, task_id: UUID, user_id: UUID, approval_type: str, status: str, feedback: Optional[str]) -> ApprovalRecord:
+    async def record_approval(self, task_id: UUID, user_id: UUID, approval_type: str, status: str, feedback: Optional[str], snapshot_hash: Optional[str] = None, defer_setup: bool = False, proposal_id: Optional[UUID] = None) -> ApprovalRecord:
         task = await self.get_task(task_id, user_id)
         if task.status not in (WorkflowState.PLAN_REVIEW, WorkflowState.CODE_REVIEW):
             raise InvalidWorkflowTransitionError("Approvals are only allowed at a review gate.")
@@ -132,16 +125,20 @@ class WorkflowEngine:
         if approval_type != expected_gate or status not in {"approved", "rejected", "revision_requested"}:
             raise InvalidWorkflowTransitionError("Approval does not match the current review gate.")
         record = ApprovalRecord(id=uuid4(), task_id=task_id, approval_type=approval_type, user_id=user_id, status=status, feedback=feedback, timestamp=_now())
-        if status == "approved" and task.status == WorkflowState.PLAN_REVIEW and task.active_staging_workspace_id is None:
+        if status == "approved" and task.status == WorkflowState.PLAN_REVIEW and task.active_staging_workspace_id is None and not defer_setup:
             await self._attach_plan_staging(task, user_id)
         target = {"approved": WorkflowState.CODING if task.status == WorkflowState.PLAN_REVIEW else WorkflowState.TEST_PLANNING,
                   "rejected": WorkflowState.CANCELLED,
                   "revision_requested": WorkflowState.PLANNING if task.status == WorkflowState.PLAN_REVIEW else WorkflowState.CODING}[status]
+        if status == 'approved' and approval_type == 'plan' and defer_setup:
+            target = WorkflowState.STAGING_SETUP
+        if status == 'approved' and approval_type == 'code' and proposal_id is not None:
+            target = WorkflowState.PROMOTING
         transition = TransitionRecord(
             id=uuid4(), task_id=task_id, previous_state=task.status, new_state=target,
             actor_type=ActorType.USER, actor_id=user_id,
             reason=f"{status} {approval_type}",
-            metadata={"feedback": feedback} if feedback else {},
+            metadata={**({"feedback": feedback} if feedback else {}), **({"snapshot": snapshot_hash} if snapshot_hash else {}), **({"proposal_id": str(proposal_id)} if proposal_id else {})},
             timestamp=_now(), task_version_before=task.version,
             task_version_after=task.version + 1,
         )
@@ -165,6 +162,12 @@ class WorkflowEngine:
         if setter is not None:
             await setter(task.id, staging.id)
 
+    async def reserve_ai_call(self, task_id, user_id):
+        await self.get_task(task_id, user_id)
+        if not await self.repository.reserve_ai_call(task_id, get_settings().MAX_AI_CALLS_PER_TASK):
+            from backend.app.ai.gateway import AIGatewayError
+            raise AIGatewayError("Persistent task AI call budget exhausted.")
+
     async def create_agent_run(self, task_id: UUID, user_id: UUID, role: AgentRole, **metadata: Any) -> AgentRunRecord:
         await self.get_task(task_id, user_id)
         prior = await self.repository.list_runs(task_id)
@@ -186,6 +189,10 @@ class WorkflowEngine:
         run = await self.repository.get_run(run_id)
         if run is None:
             raise TaskNotFoundError(run_id)
+        evidence = metadata.get('metadata') or {}
+        for key in ('worker_id', 'provider_id', 'model_name', 'fallback_used', 'fallback_reason'):
+            if key in evidence:
+                metadata[key] = evidence[key]
         update = {"status": status, **metadata}
         if status == ExecutionStatus.RUNNING: update["started_at"] = _now()
         if status in (
@@ -223,4 +230,5 @@ class WorkflowEngine:
         await self.repository.add_message(task_id, sender_type, content, metadata)
 
 
-workflow_engine = WorkflowEngine()
+from backend.app.services.runtime import RuntimeRef
+workflow_engine = RuntimeRef("workflow")

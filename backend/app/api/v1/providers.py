@@ -371,6 +371,12 @@ async def list_loadouts(auth: AuthenticatedUserContext = Depends(get_authenticat
 
 @router.post("/workspaces/{workspace_id}/loadout/{loadout_id}")
 async def switch_loadout(workspace_id: UUID, loadout_id: UUID, auth: AuthenticatedUserContext = Depends(get_authenticated_user)):
+    from backend.app.services.runtime import get_runtime
+    from backend.app.services.workspace_service import WorkspaceNotFoundError
+    try:
+        await get_runtime().workspace.get_workspace(workspace_id, auth.user_id)
+    except WorkspaceNotFoundError:
+        raise HTTPException(status_code=404, detail="Workspace not found")
     repository = _repository()
     if repository:
         try:
@@ -387,6 +393,12 @@ async def switch_loadout(workspace_id: UUID, loadout_id: UUID, auth: Authenticat
 
 @router.get("/workspaces/{workspace_id}/loadout")
 async def active_loadout(workspace_id: UUID, auth: AuthenticatedUserContext = Depends(get_authenticated_user)):
+    from backend.app.services.runtime import get_runtime
+    from backend.app.services.workspace_service import WorkspaceNotFoundError
+    try:
+        await get_runtime().workspace.get_workspace(workspace_id, auth.user_id)
+    except WorkspaceNotFoundError:
+        raise HTTPException(status_code=404, detail="Workspace not found")
     repository = _repository()
     if repository:
         return await repository.active_loadout(auth.user_id, workspace_id)

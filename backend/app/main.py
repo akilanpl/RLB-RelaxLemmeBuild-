@@ -10,13 +10,8 @@ from backend.app.core.config import get_settings
 from backend.app.api.v1.api import api_v1_router
 from backend.app.api.v1.health import (
     get_system_health, get_database_health, get_full_health,
-    get_queue_health, get_storage_health, get_sandbox_health,
+    get_queue_health, get_storage_health, get_sandbox_health, get_readiness,
 )
-from backend.app.services.composition import build_agent_services
-from backend.app.api.v1.tasks import configure_agent_services, job_queue, testing_repository
-from backend.app.services.durable_worker import build_default_worker
-from backend.app.services.test_orchestrator import TestOrchestrationService
-from backend.app.services.production_runtime import build_configured_sandbox
 
 
 async def _consume_queue(worker, stop: asyncio.Event) -> None:
@@ -24,8 +19,8 @@ async def _consume_queue(worker, stop: asyncio.Event) -> None:
     while not stop.is_set():
         try:
             job = await worker.run_once()
-        except Exception:
-            logger.exception("Durable worker failed a job")
+        except Exception as exc:
+            logger.error("Worker job failed (%s)", type(exc).__name__)
             job = None
         if job is None:
             try:
@@ -40,35 +35,18 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     from backend.app.core.preflight import validate_hosted_configuration
     validate_hosted_configuration("api")
-    services = getattr(app.state, "agent_services", None)
-    if services and services.resolver and services.resolver.repository:
-        try:
-            await services.resolver.hydrate()
-        except Exception as exc:
-            if settings.ENVIRONMENT == "production":
-                raise RuntimeError("Provider configuration hydration failed; refusing startup.") from exc
-            logging.getLogger(__name__).warning(
-                "Provider configuration hydration failed (%s); continuing in %s so health diagnostics remain available.",
-                type(exc).__name__,
-                settings.ENVIRONMENT,
-            )
+    from backend.app.services.runtime import get_runtime
+    runtime = get_runtime()
+    services = runtime.agents
+    app.state.runtime = runtime
+    await runtime.start()
     stop = asyncio.Event()
     worker_task = None
-    sandbox = None
     embedded = settings.RUN_EMBEDDED_WORKER
     if embedded is None:
         embedded = settings.ENVIRONMENT in {"development", "test"}
     if services is not None and embedded:
-        sandbox = build_configured_sandbox()
-        orchestrator = TestOrchestrationService(job_queue.workflow, testing_repository, sandbox=sandbox, runtime_resolver=services.resolver)
-        worker = build_default_worker(
-            job_queue,
-            os.getenv("WORKER_ID", "local-worker"),
-            services.planner,
-            services.coder,
-            services.reviewer,
-            orchestrator,
-        )
+        worker = runtime.worker(os.getenv("WORKER_ID", "local-worker"))
         worker_task = asyncio.create_task(_consume_queue(worker, stop))
     yield
     stop.set()
@@ -78,18 +56,12 @@ async def lifespan(app: FastAPI):
             await worker_task
         except asyncio.CancelledError:
             pass
-    if sandbox is not None:
-        await sandbox.client.close()
-    if hasattr(job_queue, "client"):
-        await job_queue.client.close()
+    await runtime.close()
 
 
 def create_app() -> FastAPI:
     """FastAPI application factory."""
     settings = get_settings()
-    # Construct one resolver for all production LLM-backed agents.
-    services = build_agent_services()
-    configure_agent_services(services)
 
     app = FastAPI(
         title=settings.PROJECT_NAME,
@@ -99,7 +71,18 @@ def create_app() -> FastAPI:
         redoc_url=f"{settings.API_V1_PREFIX}/redoc",
         lifespan=lifespan,
     )
-    app.state.agent_services = services
+
+    from fastapi.responses import JSONResponse
+    from backend.app.services.task_service import WorkflowConflictError, InvalidWorkflowTransitionError
+
+    @app.exception_handler(PermissionError)
+    async def forbidden(request, exc):
+        return JSONResponse({'detail': 'Resource access denied.'}, status_code=403)
+
+    @app.exception_handler(WorkflowConflictError)
+    @app.exception_handler(InvalidWorkflowTransitionError)
+    async def conflict(request, exc):
+        return JSONResponse({'detail': 'Workflow state changed or action is not allowed. Reload the task.'}, status_code=409)
 
     # Configure CORS
     if settings.BACKEND_CORS_ORIGINS:
@@ -110,6 +93,8 @@ def create_app() -> FastAPI:
             allow_methods=["*"],
             allow_headers=["*"],
         )
+
+    app.add_api_route("/ready", get_readiness, methods=["GET"], tags=["health"])
 
     # Root health endpoints
     app.add_api_route("/health", get_system_health, methods=["GET"], tags=["health"])

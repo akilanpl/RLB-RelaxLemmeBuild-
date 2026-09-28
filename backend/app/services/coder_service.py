@@ -40,6 +40,9 @@ def _snapshot(paths_and_contents) -> str:
     return digest.hexdigest()
 
 
+_promotion_locks = {}
+
+
 class CoderExecutionError(RuntimeError):
     pass
 
@@ -169,21 +172,38 @@ class CoderService:
             id=proposal_id, task_id=task.id, agent_run_id=run_id,
             staging_workspace_id=staging_id, summary=change_set.summary,
             commit_message=change_set.commit_message, diffs=diffs,
+            revision_number=len(await self.proposals.list_by_task(task.id)) + 1,
             base_snapshot_hash=staging.base_snapshot_hash,
             impact=change_set.impact.model_dump(mode="json"),
             created_at=datetime.now(timezone.utc),
         )
         return await self.proposals.add(proposal)
 
-    async def approve_and_apply(self, proposal_id: UUID, user_id: UUID):
+    async def request_promotion(self, proposal_id: UUID, user_id: UUID):
+        proposal = await self.proposals.get(proposal_id)
+        if proposal is None:
+            raise CoderExecutionError('Code proposal not found.')
+        task = await self.workflow.get_task(proposal.task_id, user_id)
+        if proposal.status != 'ready_for_review' or task.status != WorkflowState.CODE_REVIEW:
+            raise CoderExecutionError('Code proposal is not awaiting approval.')
+        workspace = await self.workflow.workspace_service.get_workspace(task.workspace_id, user_id)
+        if not _same_snapshot(workspace.current_snapshot_hash, proposal.base_snapshot_hash):
+            raise SnapshotConflictError('Canonical snapshot changed before approval.')
+        await self.workflow.record_approval(task.id, user_id, 'code', 'approved', None, proposal_id=proposal.id)
+        return {'proposal_id': proposal.id, 'status': 'promoting'}
+
+    async def approve_and_apply(self, proposal_id: UUID, user_id: UUID, *, already_approved=False):
         proposal = await self.proposals.get(proposal_id)
         if not proposal:
             raise CoderExecutionError("Code proposal not found.")
         if proposal.status == "applied":
             raise CoderExecutionError("Code proposal has already been applied.")
         task = await self.workflow.get_task(proposal.task_id, user_id)
-        if task.status != WorkflowState.CODE_REVIEW or proposal.status != "ready_for_review":
+        expected_state = WorkflowState.PROMOTING if already_approved else WorkflowState.CODE_REVIEW
+        if task.status != expected_state or proposal.status != "ready_for_review":
             raise CoderExecutionError("Code proposal is not awaiting approval.")
+        if already_approved and task.approved_proposal_id != proposal.id:
+            raise CoderExecutionError('Proposal does not match persisted human approval.')
         staging = await self.staging_service.get_staging_workspace(proposal.staging_workspace_id, user_id)
         ws = await self.staging_service.workspace_service.get_workspace(task.workspace_id, user_id)
         if not _same_snapshot(ws.current_snapshot_hash, proposal.base_snapshot_hash):
@@ -196,49 +216,56 @@ class CoderService:
                 return await promote_snapshot(sessions, storage, ws, staging, proposal, task, user_id)
             except ValueError as exc:
                 raise SnapshotConflictError(str(exc)) from exc
-        canonical = await storage.list_files(ws.canonical_root_path)
-        backup = {p: await storage.read_file(p) for p in canonical}
-        from backend.app.services.workspace_service import _MEMORY_FILES
-        previous_files = [dict(item) for item in _MEMORY_FILES.get(ws.id, [])]
-        old_snapshot_hash = ws.current_snapshot_hash
-        try:
+        # Local storage uses the same immutable snapshot/pointer pattern.
+        import asyncio
+        lock = _promotion_locks.setdefault(ws.id, asyncio.Lock())
+        async with lock:
+            current = await self.workflow.get_task(task.id, user_id)
+            latest_ws = await self.staging_service.workspace_service.get_workspace(ws.id, user_id)
+            if current.version != task.version or not _same_snapshot(latest_ws.current_snapshot_hash, proposal.base_snapshot_hash):
+                raise SnapshotConflictError("Canonical state changed before approval.")
+            from backend.app.services.workspace_service import _MEMORY_FILES, _MEMORY_WORKSPACES
+            previous_files = [dict(item) for item in _MEMORY_FILES.get(ws.id, [])]
+            previous = latest_ws.model_copy(deep=True)
+            root = f"workspaces/{ws.id}/snapshots/{uuid4()}"
             staged = await storage.list_files(staging.staging_root_path)
-            for p in canonical:
-                await storage.delete_file(p)
-            for p in staged:
-                rel = p[len(staging.staging_root_path) + 1:]
-                await storage.write_file(f"{ws.canonical_root_path}/{rel}", await storage.read_file(p))
-            new_files = [(p[len(ws.canonical_root_path) + 1:], await storage.read_file(p)) for p in await storage.list_files(ws.canonical_root_path)]
-            ws.current_snapshot_hash = _snapshot(new_files) if new_files else (ws.current_snapshot_hash or "empty-root")
-            ws.updated_at = datetime.now(timezone.utc)
-            synced = await self.staging_service.workspace_service.sync_canonical_metadata(ws)
-            ws.current_snapshot_hash = synced.current_snapshot_hash
-            ws.file_count = synced.file_count
-            ws.total_size_bytes = synced.total_size_bytes
-            await self.workflow.record_approval(task.id, user_id, "code", "approved", None)
-            proposal.status = "applied"
-            await self.proposals.update(proposal)
-            return {"proposal_id": proposal_id, "new_snapshot_hash": ws.current_snapshot_hash,
-                    "files_applied": len(staged), "is_successful": True}
-        except Exception:
-            for p in await storage.list_files(ws.canonical_root_path):
-                await storage.delete_file(p)
-            for p, content in backup.items():
-                await storage.write_file(p, content)
-            ws.current_snapshot_hash = old_snapshot_hash
-            await self.staging_service.workspace_service.replace_tracked_files(
-                ws, previous_files, old_snapshot_hash
-            )
-            proposal.status = "failed"
-            await self.proposals.update(proposal)
-            raise
+            try:
+                for path in staged:
+                    relative = path[len(staging.staging_root_path.rstrip('/')) + 1:]
+                    await storage.write_file(f"{root}/{relative}", await storage.read_file(path))
+                updated = latest_ws.model_copy(update={'canonical_root_path': root})
+                synced = await self.staging_service.workspace_service.sync_canonical_metadata(updated)
+                if already_approved:
+                    from backend.app.models.task import ActorType
+                    await self.workflow.transition(task.id, WorkflowState.TEST_PLANNING, ActorType.SYSTEM, None,
+                        'Approved snapshot promoted', {'snapshot': synced.current_snapshot_hash}, expected_version=current.version)
+                else:
+                    await self.workflow.record_approval(task.id, user_id, "code", "approved", None, snapshot_hash=synced.current_snapshot_hash)
+                proposal.status = 'applied'
+                await self.proposals.update(proposal)
+                # Preserve existing in-process references, but only after commit.
+                latest_ws.canonical_root_path = synced.canonical_root_path
+                latest_ws.current_snapshot_hash = synced.current_snapshot_hash
+                latest_ws.file_count = synced.file_count
+                latest_ws.total_size_bytes = synced.total_size_bytes
+                return {'proposal_id': proposal.id, 'new_snapshot_hash': synced.current_snapshot_hash,
+                        'files_applied': len(staged), 'is_successful': True}
+            except BaseException:
+                _MEMORY_WORKSPACES[ws.id] = previous
+                _MEMORY_FILES[ws.id] = previous_files
+                # Only the unpublished snapshot is eligible for cleanup.
+                try:
+                    await storage.delete_directory(root)
+                except Exception:
+                    pass
+                raise
 
     async def request_revision(self, proposal_id: UUID, user_id: UUID, feedback: str):
         proposal = await self.proposals.get(proposal_id)
         if proposal is None:
             raise CoderExecutionError("Code proposal not found.")
         task = await self.workflow.get_task(proposal.task_id, user_id)
-        if task.status != WorkflowState.CODE_REVIEW:
+        if task.status != WorkflowState.CODE_REVIEW or proposal.status != "ready_for_review":
             raise CoderExecutionError("Code proposal is not awaiting review.")
         await self.workflow.record_approval(
             task.id, user_id, "code", "revision_requested", feedback
@@ -252,6 +279,8 @@ class CoderService:
         if proposal is None:
             raise CoderExecutionError("Code proposal not found.")
         task = await self.workflow.get_task(proposal.task_id, user_id)
+        if proposal.status != "ready_for_review":
+            raise CoderExecutionError("Code proposal is not awaiting review.")
         await self.workflow.record_approval(task.id, user_id, "code", "rejected", None)
         proposal.status = "rejected"
         await self.proposals.update(proposal)
@@ -261,4 +290,5 @@ class CoderService:
         return proposal
 
 
-coder_service = CoderService()
+from backend.app.services.runtime import RuntimeRef
+coder_service = RuntimeRef("agents.coder")

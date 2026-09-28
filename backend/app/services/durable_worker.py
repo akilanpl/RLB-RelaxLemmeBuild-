@@ -4,7 +4,7 @@ import asyncio
 from contextlib import suppress
 from typing import Awaitable, Callable, Dict
 
-from backend.app.services.job_queue import Job, JobStatus, LocalJobQueue
+from backend.app.services.job_queue import Job, JobStatus, JobQueue
 from backend.app.models.task import ActorType
 from backend.app.services.task_service import TRANSITIONS
 from backend.app.workflow.states import WorkflowState
@@ -13,8 +13,27 @@ from backend.app.workflow.states import WorkflowState
 StageHandler = Callable[[Job], Awaitable[WorkflowState]]
 
 
+def _transient(exc):
+    from backend.app.ai.failover import TransientProviderError
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        if isinstance(exc, TransientProviderError):
+            return True
+        seen.add(id(exc))
+        exc = exc.__cause__
+    return False
+
+
+class MissingStageHandler(RuntimeError):
+    pass
+
+
+class TaskCancelled(RuntimeError):
+    pass
+
+
 class DurableTaskWorker:
-    def __init__(self, queue: LocalJobQueue, worker_id: str,
+    def __init__(self, queue: JobQueue, worker_id: str,
                  handlers: Dict[WorkflowState, StageHandler]):
         self.queue = queue
         self.worker_id = worker_id
@@ -33,14 +52,21 @@ class DurableTaskWorker:
                     return await self.queue.wait_for_approval(job.id, self.worker_id)
                 handler = self.handlers.get(task.status)
                 if handler is None:
-                    raise RuntimeError(f"No handler registered for workflow state {task.status.value}.")
+                    raise MissingStageHandler(f"No handler registered for workflow state {task.status.value}.")
                 await self.queue.heartbeat(job.id, self.worker_id)
                 await self._run_with_heartbeat(handler, job)
+        except TaskCancelled:
+            return await self.queue.complete(job.id, self.worker_id)
         except Exception as exc:
             # A lost lease must not overwrite the new owner's job or mask the
             # original exception with a second lease failure.
             with suppress(RuntimeError):
-                await self.queue.fail(job.id, self.worker_id, str(exc))
+                if _transient(exc) and job.attempts < 3:
+                    await self.queue.release(job.id, self.worker_id)
+                else:
+                    if _transient(exc):
+                        await _mark_failed(self.queue.workflow, job, RuntimeError('Provider retry limit exhausted.'))
+                    await self.queue.fail(job.id, self.worker_id, str(exc) if isinstance(exc, MissingStageHandler) else type(exc).__name__)
             raise
 
     async def _run_with_heartbeat(self, handler, job):
@@ -48,6 +74,9 @@ class DurableTaskWorker:
             while True:
                 await asyncio.sleep(max(0.01, self.queue.lease_seconds / 3))
                 await self.queue.heartbeat(job.id, self.worker_id)
+                task = await self.queue.workflow.get_task(job.task_id, job.user_id)
+                if task.status == WorkflowState.CANCELLED:
+                    raise TaskCancelled('Task cancelled by user.')
 
         stage = asyncio.create_task(handler(job))
         heartbeat = asyncio.create_task(renew())
@@ -68,6 +97,8 @@ class DurableTaskWorker:
 
 
 async def _mark_failed(workflow, job, exc: Exception) -> None:
+    if _transient(exc):
+        return
     task = await workflow.get_task(job.task_id, job.user_id)
     if WorkflowState.FAILED not in TRANSITIONS.get(task.status, set()):
         return
@@ -78,15 +109,27 @@ async def _mark_failed(workflow, job, exc: Exception) -> None:
     )
 
 
-def build_default_worker(queue: LocalJobQueue, worker_id: str, planner, coder, reviewer,
+def build_default_worker(queue: JobQueue, worker_id: str, planner, coder, reviewer,
                          test_orchestrator) -> DurableTaskWorker:
     """Bind existing agent services to the replaceable worker boundary."""
     workflow = queue.workflow
 
     async def ready(job):
         task = await workflow.get_task(job.task_id, job.user_id)
+        await workflow.transition(task.id, WorkflowState.ANALYZING, ActorType.SYSTEM, None,
+                                  "Durable worker started analysis", expected_version=task.version)
+        return WorkflowState.ANALYZING
+
+    async def analyzing(job):
+        task = await workflow.get_task(job.task_id, job.user_id)
+        try:
+            from backend.app.analysis.service import CodebaseAnalysisService
+            await CodebaseAnalysisService(workspace_service=workflow.workspace_service).analyze_workspace(task.workspace_id, job.user_id)
+        except Exception as exc:
+            await _mark_failed(workflow, job, exc)
+            raise
         await workflow.transition(task.id, WorkflowState.PLANNING, ActorType.SYSTEM, None,
-                                  "Durable worker started task", expected_version=task.version)
+                                  "Repository analysis completed", expected_version=task.version)
         return WorkflowState.PLANNING
 
     async def planning(job):
@@ -102,6 +145,21 @@ def build_default_worker(queue: LocalJobQueue, worker_id: str, planner, coder, r
                                   "Planner produced a structured plan",
                                   {"plan_id": str(plan.id)}, expected_version=task.version)
         return WorkflowState.PLAN_REVIEW
+
+    async def staging_setup(job):
+        task = await workflow.get_task(job.task_id, job.user_id)
+        if task.active_staging_workspace_id is None:
+            await workflow._attach_plan_staging(task, job.user_id)
+        await workflow.transition(task.id, WorkflowState.CODING, ActorType.SYSTEM, None,
+            'Isolated staging ready', expected_version=task.version)
+        return WorkflowState.CODING
+
+    async def promoting(job):
+        task = await workflow.get_task(job.task_id, job.user_id)
+        if task.approved_proposal_id is None:
+            raise RuntimeError('Persisted code approval is missing.')
+        await coder.approve_and_apply(task.approved_proposal_id, job.user_id, already_approved=True)
+        return WorkflowState.TEST_PLANNING
 
     async def coding(job):
         task = await workflow.get_task(job.task_id, job.user_id)
@@ -136,12 +194,18 @@ def build_default_worker(queue: LocalJobQueue, worker_id: str, planner, coder, r
         return WorkflowState.CODING
 
     async def reviewing(job):
-        await reviewer.execute(job.task_id, job.user_id)
+        report = await reviewer.execute(job.task_id, job.user_id)
+        task = await workflow.get_task(job.task_id, job.user_id)
+        await workflow.transition(task.id, WorkflowState.COMPLETED, ActorType.SYSTEM, None,
+            'Read-only reviewer evidence persisted', {'reviewer_report_id': str(report.id)}, expected_version=task.version)
         return WorkflowState.COMPLETED
 
     return DurableTaskWorker(queue, worker_id, {
         WorkflowState.READY: ready,
+        WorkflowState.ANALYZING: analyzing,
         WorkflowState.PLANNING: planning,
+        WorkflowState.STAGING_SETUP: staging_setup,
+        WorkflowState.PROMOTING: promoting,
         WorkflowState.CODING: coding,
         WorkflowState.TEST_PLANNING: testing,
         WorkflowState.TEST_EXECUTING: testing,

@@ -49,3 +49,24 @@ The offline backend suite does not require production infrastructure. Never set 
 ## Hosted environments
 
 See [HOSTED_SETUP.md](HOSTED_SETUP.md) for the exact account/env checklist, additive migrations, and deployment acceptance steps. Vercel runs the frontend; Railway runs API and worker separately; Supabase supplies Auth/PostgreSQL/Queue/private Storage; Daytona supplies isolated execution. Local and hosted implementations share the existing abstractions.
+
+## Deterministic engineering smoke test
+
+From the existing repository root, without using root `.env` accounts:
+
+```sh
+RLB_ENV_FILE=backend/.env.example backend/.venv/bin/python -m pytest backend/tests/test_final_engineering.py -q
+```
+
+This includes the real ZIP import, analysis, workflow, approval, versioned promotion, deliberate test failure, bounded repair, review and completion services. Only provider/sandbox infrastructure is replaced with explicit deterministic doubles. Fixtures live in `backend/tests/fixtures/rlb-fixture`; imported project commands are never executed on the test host. Restart checks reconstruct workers/services over retained test repositories; they do not prove process-crash durability of Supabase.
+
+For the local API, the embedded worker shares its in-process queue. Do not start `python -m backend.worker` alongside memory mode: separate processes cannot share an in-memory queue. The standalone worker intentionally requires hosted persistence and queue configuration.
+
+For a credential-free frontend preview:
+
+```sh
+cd /Users/akilan/Downloads/UEE/frontend
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8000 NEXT_PUBLIC_SUPABASE_URL= NEXT_PUBLIC_SUPABASE_ANON_KEY= NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY= WATCHPACK_POLLING=true npm run dev -- --hostname 127.0.0.1 --port 3000
+```
+
+Browser login is unavailable in this mode. Automated tests use explicit authenticated test contexts; no browser authentication bypass is installed. Cloud credentials are not required for the deterministic smoke test, but real browser signup/login needs test Supabase, and real task execution needs an AI provider plus Daytona.

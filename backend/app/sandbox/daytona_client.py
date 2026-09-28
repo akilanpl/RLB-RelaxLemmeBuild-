@@ -24,7 +24,7 @@ class DaytonaRuntimeClient:
                 disk=math.ceil(resources['disk_limit_mb'] / 1024)),
             network_block_all=not network_enabled and not domains,
             domain_allow_list=",".join(domains) if domains else None,
-            auto_stop_interval=15, auto_delete_interval=0,
+            auto_stop_interval=15, auto_delete_interval=60,
         )
         sandbox = await self.sdk.create(params, timeout=120)
         self.sandboxes[sandbox.id] = sandbox

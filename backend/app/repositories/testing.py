@@ -39,6 +39,11 @@ class InMemoryTestingRepository:
         self.executions[execution.id] = execution
         return execution
 
+    async def add_command_result(self, execution_id, evidence):
+        execution = self.executions[execution_id]
+        self.executions[execution_id] = execution.model_copy(update={
+            'command_results': [*execution.command_results, evidence]})
+
     async def add_build_result(self, result):
         execution = self.executions[result.test_execution_id]
         self.executions[result.test_execution_id] = execution.model_copy(
@@ -95,16 +100,22 @@ class PostgresTestingRepository:
     async def add_execution(self, execution):
         async with self.sessionmaker() as session:
             await session.execute(text(
-                "INSERT INTO test_executions (id, task_id, agent_run_id, all_passed, total_tests, passed_tests, failed_tests, execution_duration_ms, failure_report, created_at) "
-                "VALUES (:id,:task_id,:run_id,:all_passed,:total,:passed,:failed,:duration,:report,:created_at) "
-                "ON CONFLICT (id) DO UPDATE SET all_passed=:all_passed,total_tests=:total,passed_tests=:passed,failed_tests=:failed,execution_duration_ms=:duration,failure_report=:report"
+                "INSERT INTO test_executions (id, task_id, agent_run_id, all_passed, total_tests, passed_tests, failed_tests, execution_duration_ms, failure_report, created_at, status) "
+                "VALUES (:id,:task_id,:run_id,:all_passed,:total,:passed,:failed,:duration,:report,:created_at,:status) "
+                "ON CONFLICT (id) DO UPDATE SET all_passed=:all_passed,total_tests=:total,passed_tests=:passed,failed_tests=:failed,execution_duration_ms=:duration,failure_report=:report,status=:status"
             ), {"id": execution.id, "task_id": execution.task_id, "run_id": execution.agent_run_id,
-                "all_passed": execution.all_passed, "total": execution.total_tests, "passed": execution.passed_tests,
+                "status": execution.status.value, "all_passed": execution.all_passed, "total": execution.total_tests, "passed": execution.passed_tests,
                 "failed": execution.failed_tests, "duration": execution.execution_duration_ms,
                 "report": json.dumps(execution.failure_report.model_dump(mode="json")) if execution.failure_report else None,
                 "created_at": execution.created_at})
             await session.commit()
         return execution
+
+    async def add_command_result(self, execution_id, evidence):
+        async with self.sessionmaker.begin() as session:
+            await session.execute(text("""UPDATE test_executions SET command_results =
+                command_results || CAST(:evidence AS jsonb) WHERE id=:id"""),
+                {'id': execution_id, 'evidence': json.dumps([evidence])})
 
     async def add_build_result(self, result):
         async with self.sessionmaker() as session:
@@ -143,9 +154,11 @@ def _execution(row, builds):
     if isinstance(report, str):
         report = json.loads(report)
     return TestExecution(id=row["id"], task_id=row["task_id"], agent_run_id=row["agent_run_id"],
+        status=row.get("status", "success" if row["all_passed"] else "failed"),
         all_passed=row["all_passed"], total_tests=row["total_tests"], passed_tests=row["passed_tests"],
         failed_tests=row["failed_tests"], execution_duration_ms=row["execution_duration_ms"],
         failure_report=report, created_at=row["created_at"],
+        command_results=json.loads(row["command_results"]) if isinstance(row.get("command_results"), str) else row.get("command_results", []),
         baseline_results=[BuildResult(id=b["id"], test_execution_id=b["test_execution_id"],
             check_type=BaselineCheckType(b["check_type"]), status=ExecutionStatus(b["status"]),
             exit_code=b["exit_code"], stdout_output=b["stdout_output"], stderr_output=b["stderr_output"],

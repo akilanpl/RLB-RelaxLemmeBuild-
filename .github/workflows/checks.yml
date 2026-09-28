@@ -11,6 +11,7 @@ jobs:
       - run: pip install -r backend/requirements-dev.txt
       - run: python -m pytest backend/tests -q
         env:
+          RLB_ENV_FILE: backend/.env.example
           ENVIRONMENT: test
           DATABASE_URL: ''
           SUPABASE_URL: ''

@@ -97,9 +97,10 @@ class ProviderGateway(AIGateway):
         except AIGatewayError:
             raise
         except Exception as exc:
+            from backend.app.ai.failover import TransientProviderError
             import httpx
             if isinstance(exc, httpx.TimeoutException):
-                raise AIGatewayError("Provider request timed out.") from exc
+                raise TransientProviderError("Provider request timed out.") from exc
             if isinstance(exc, httpx.HTTPStatusError):
                 status = exc.response.status_code
                 if status == 401 or status == 403:
@@ -107,11 +108,13 @@ class ProviderGateway(AIGateway):
                 if status == 404:
                     raise AIGatewayError("Provider model or endpoint is unavailable.") from exc
                 if status == 429:
-                    raise AIGatewayError("Provider rate limit exceeded.") from exc
+                    raise TransientProviderError("Provider rate limit exceeded.") from exc
                 if status >= 500:
-                    raise AIGatewayError("Provider is unavailable.") from exc
+                    raise TransientProviderError("Provider is unavailable.") from exc
             if isinstance(exc, (KeyError, IndexError, TypeError, ValueError)):
                 raise AIGatewayError("Provider returned a malformed response.") from exc
+            if isinstance(exc, httpx.TransportError):
+                raise TransientProviderError("Provider transport unavailable.") from exc
             if isinstance(exc, httpx.HTTPError):
                 raise AIGatewayError("Provider request failed.") from exc
             raise AIGatewayError("Provider request failed.") from exc

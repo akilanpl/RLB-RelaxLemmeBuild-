@@ -68,6 +68,5 @@ class ReviewerContextBuilder:
 
 
 def _redact(value: str) -> str:
-    for marker in ("sk-", "GROQ_", "OPENAI_", "Bearer "):
-        value = value.replace(marker, "[REDACTED]")
-    return value
+    from backend.app.analysis.sanitizer import redact_secrets
+    return redact_secrets(value)

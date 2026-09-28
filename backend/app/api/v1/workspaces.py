@@ -21,33 +21,10 @@ from backend.app.analysis.types import (
 )
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
-workspace_service = WorkspaceService()
-staging_service = StagingService(workspace_service=workspace_service)
-analysis_service = CodebaseAnalysisService(workspace_service=workspace_service)
-
-# Default dev user fallback if no auth token/header is supplied
-DEFAULT_DEV_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
-
-
-
-def resolve_user_id(x_user_id: Optional[str] = None) -> UUID:
-    """Resolve legacy development identity; production requires bearer auth."""
-    from backend.app.core.config import get_settings
-    if get_settings().ENVIRONMENT == "production":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Bearer token authentication is required for workspace APIs.",
-        )
-    if x_user_id:
-        try:
-            return UUID(x_user_id)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid x-user-id header format; must be UUID.",
-            )
-    return DEFAULT_DEV_USER_ID
-
+from backend.app.services.runtime import RuntimeRef
+workspace_service = RuntimeRef("workspace")
+staging_service = RuntimeRef("staging")
+analysis_service = RuntimeRef("analysis")
 
 class FileContentResponse(BaseModel):
     path: str

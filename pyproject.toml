@@ -2,3 +2,5 @@
 pythonpath = ["."]
 testpaths = ["backend/tests"]
 asyncio_mode = "auto"
+
+norecursedirs = ["fixtures", "node_modules", ".venv"]

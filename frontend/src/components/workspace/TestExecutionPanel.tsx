@@ -55,7 +55,7 @@ export default function TestExecutionPanel({ taskId, userId }: { taskId: string;
         <div className="border-t border-slate-800 pt-3">
           <h3 className="font-semibold text-slate-200">TEST EXECUTING</h3>
           <p className={execution.all_passed ? 'mt-1 text-emerald-400' : 'mt-1 text-rose-400'}>
-            {execution.all_passed ? 'Passed' : 'Failed'} · {execution.passed_tests}/{execution.total_tests} test cases
+            {execution.status ? execution.status.replaceAll('_', ' ') : execution.all_passed ? 'Passed' : 'Failed'} · {execution.passed_tests}/{execution.total_tests} test cases
           </p>
           <div className="mt-2 grid gap-1 md:grid-cols-2">
             {(execution.baseline_results ?? []).map((result) => (

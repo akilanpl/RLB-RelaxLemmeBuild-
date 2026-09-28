@@ -67,7 +67,7 @@ async def get_full_health():
 async def get_queue_health():
     settings = get_settings()
     configured = bool(settings.SUPABASE_URL and settings.SUPABASE_SERVICE_ROLE_KEY)
-    return DependencyHealthResponse(status="ok" if configured or settings.ENVIRONMENT != "production" else "degraded",
+    return DependencyHealthResponse(status=("configured" if configured else "not_configured") if settings.ENVIRONMENT in {"staging", "production"} else "local",
                                     configured=configured)
 
 
@@ -75,7 +75,7 @@ async def get_queue_health():
 async def get_storage_health():
     settings = get_settings()
     configured = bool(settings.SUPABASE_URL and settings.SUPABASE_SERVICE_ROLE_KEY)
-    return DependencyHealthResponse(status="ok" if configured or settings.ENVIRONMENT != "production" else "degraded",
+    return DependencyHealthResponse(status=("configured" if configured else "not_configured") if settings.ENVIRONMENT in {"staging", "production"} else "local",
                                     configured=configured)
 
 
@@ -85,3 +85,11 @@ async def get_sandbox_health():
     configured = bool(settings.DAYTONA_API_KEY and settings.DAYTONA_SANDBOX_IMAGE)
     return DependencyHealthResponse(status="configured" if configured else "not_configured",
                                     configured=configured)
+
+
+@router.get('/ready')
+async def get_readiness():
+    from fastapi.responses import JSONResponse
+    from backend.app.services.readiness import readiness
+    result = await readiness()
+    return JSONResponse(result, status_code=503 if result['status'] == 'not_ready' else 200)

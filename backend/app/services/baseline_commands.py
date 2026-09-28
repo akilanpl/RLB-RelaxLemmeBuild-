@@ -2,6 +2,7 @@
 import json
 import posixpath
 import shlex
+import tomllib
 from backend.app.models.test import BaselineCheckType as Check
 
 
@@ -31,5 +32,22 @@ async def discover_baseline_commands(storage, root):
         commands[Check.TYPE_CHECK].append('python -m compileall -q .')
         if any(path.startswith(('tests/', 'backend/tests/')) for path in relative):
             commands[Check.UNIT_INTEGRATION_TESTS].append('python -m pytest -q')
+    if 'pyproject.toml' in relative:
+        data = tomllib.loads((await storage.read_file(prefix + 'pyproject.toml')).decode())
+        tools = data.get('tool', {})
+        if 'ruff' in tools:
+            commands[Check.LINT].append('python -m ruff check .')
+        if 'mypy' in tools:
+            commands[Check.TYPE_CHECK].append('python -m mypy .')
+    # Explicit project-owned checks, executed only in the isolated sandbox.
+    if 'rlb.verify.json' in relative:
+        explicit = json.loads((await storage.read_file(prefix + 'rlb.verify.json')).decode())
+        if not isinstance(explicit, dict):
+            raise ValueError('rlb.verify.json must map check types to commands.')
+        for name, command in explicit.items():
+            check = Check(name)
+            if not isinstance(command, str) or not command.strip() or len(command) > 10000:
+                raise ValueError('Invalid project verification command.')
+            commands[check].append(command)
     return {check: ' && '.join('(' + cmd + ')' for cmd in values)
             for check, values in commands.items() if values}

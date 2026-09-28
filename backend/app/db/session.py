@@ -47,16 +47,11 @@ def get_engine() -> Optional[AsyncEngine]:
                 ssl_context = ssl.create_default_context(cafile=certifi.where())
             except Exception:
                 ssl_context = ssl.create_default_context()
-            # Local networks sometimes intercept TLS with a private CA.
-            # Keep encryption on; only skip CA verification outside production.
-            if settings.ENVIRONMENT in {"development", "test"}:
-                ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl.CERT_NONE
             connect_args["ssl"] = ssl_context
 
         _engine = create_async_engine(
             db_url,
-            echo=settings.DEBUG,
+            echo=False,
             future=True,
             pool_pre_ping=True,
             connect_args=connect_args,

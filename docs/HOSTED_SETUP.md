@@ -105,3 +105,15 @@ Known operational limits: real PostgreSQL/pgmq transactions, cloud promotion SQL
 - [Daytona network restrictions](https://www.daytona.io/docs/en/network-limits/)
 - [Railway configuration reference](https://docs.railway.com/config-as-code/reference)
 - [Vercel build settings](https://vercel.com/docs/deploy-button/build-settings)
+
+## Final engineering pass: migration 003 and readiness
+
+Apply `schema/migrations/003_execution_controls.sql` **after** 001 and 002, including on new installations. It adds durable per-task AI-call accounting, provider attempt records, command evidence, ordered task events, and worker heartbeats. It removes browser write privileges from workflow tables and queue schemas: changes must pass authenticated API authorization/approval checks. The server database role needs table/sequence access and pgmq execution privileges (the usual trusted Supabase `postgres` connection owns these objects). Do not use an `anon` or `authenticated` database role for the worker.
+
+Additional non-secret controls: `MAX_REPAIR_ATTEMPTS=3` and `MAX_TASKS_PER_USER_PER_HOUR=30`. Task submission throttling is per authenticated user; PostgreSQL serializes each user's admission check. Every primary/fallback provider attempt reserves one persisted AI budget unit before the external request. Three transient delivery failures exhaust the worker retry limit. Auth signup/login abuse protection remains Supabase Auth's rate-limit/CAPTCHA/email-confirmation configuration: validate those platform controls in staging; the RLB API does not proxy passwords.
+
+`/health` is process liveness. `/ready` checks hosted database schema, queue existence, a worker heartbeat within 90 seconds, and a private artifact bucket. It returns HTTP 503 when those checks fail. It reports sandbox/provider limitations explicitly, not as successful live execution. API and worker also verify bucket privacy on startup. The worker records its heartbeat every 20 seconds independently of long tasks. Per-user provider readiness still requires configured credentials/loadouts and an actual call.
+
+Daytona sandboxes are deleted after normal execution/cancellation; the SDK request also sets auto-stop at 15 minutes and auto-delete at 60 minutes to bound orphan retention after a process crash. Those settings require live Daytona validation. No image is invented or provided by this repository.
+
+For this pass the existing root `.env` accounts were explicitly left unused, even though Supabase is known non-production. No cloud migrations, smoke-test users, deployments, external AI calls, or Daytona executions were performed. Configure the image and authorize a later staging acceptance pass before deploying migration 003 and the new application together.

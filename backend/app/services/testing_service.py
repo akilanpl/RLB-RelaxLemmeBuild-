@@ -53,15 +53,16 @@ class TestArchitectService:
             ("security", "Verify authorization boundaries", "Attempt unauthorized access and mutation paths.", "Unauthorized operations are rejected."),
         ]
         if self.gateway is not None:
+            from backend.app.analysis.sanitizer import redact_secrets
             response = await self.gateway.generate(AIRequest(
                 system_prompt=("You are a read-only test architect. Return only JSON with a test_cases array. "
-                    "Each case must have category (functional, regression, edge_case, security), title, "
+                    "Each case must have category (functional, regression, edge_case, security, integration), title, "
                     "description, expected_result, and test_code. test_code must be an executable shell "
                     "command that asserts behavior and exits nonzero on failure. Commands run only in "
                     "an isolated disposable sandbox at /workspace. Do not return echo-only or manual "
                     "checks. Do not assume secrets or external services exist. Use the supplied source "
                     "and approved plan. Never change mandatory baseline checks."),
-                user_prompt=json.dumps({"objective": objective, "context": context or {}}),
+                user_prompt=redact_secrets(json.dumps({"objective": objective, "context": context or {}}))[:180000],
             ))
             generated = json.loads(response.content)
             raw_cases = generated.get("test_cases", [])
@@ -136,6 +137,7 @@ class TestExecutorService:
                 else "Test Executor requires an isolated staging workspace."
             )
             failed = execution.model_copy(update={
+                "status": ExecutionStatus.UNAVAILABLE,
                 "execution_duration_ms": int((monotonic() - started) * 1000),
                 "failure_report": FailureReport(
                     summary=reason,
@@ -149,9 +151,13 @@ class TestExecutorService:
             })
             await self.repository.add_execution(failed)
             raise RuntimeError(reason)
-        sandbox_id = await self.sandbox.create_sandbox(workspace_id, staging_root, self.limits)
+        sandbox_id = None
+        self._execution_id = execution.id
+        self._task_id = task_id
+        self._commands = []
         failures = []
         try:
+            sandbox_id = await self.sandbox.create_sandbox(workspace_id, staging_root, self.limits)
             baseline_results = []
             for check in self.BASELINE_CHECKS:
                 result = await self._run_check(sandbox_id, execution.id, check)
@@ -161,6 +167,7 @@ class TestExecutorService:
                     failures.append(FailedCheckDetail(
                         check_name=check.value, error_summary="Baseline check failed",
                         exit_code=result.exit_code, traceback_or_logs=result.stderr_output or result.stdout_output or "",
+                        command=self.baseline_commands.get(check), stdout=result.stdout_output or "", stderr=result.stderr_output or "", sandbox_id=sandbox_id,
                     ))
             passed = failed = 0
             # Do not run authored tests after a mandatory baseline failure. This
@@ -174,7 +181,7 @@ class TestExecutorService:
                             error_summary="Test is not executable", exit_code=-1,
                             traceback_or_logs="Configure a test architect worker to generate executable assertions."))
                         continue
-                    result = await self.sandbox.execute_command(
+                    result = await self._execute_command(
                         sandbox_id, SandboxCommand(cmd=case.test_code, timeout_seconds=self.limits.timeout_seconds)
                     )
                     if result.exit_code == 0 and not result.timed_out:
@@ -184,23 +191,55 @@ class TestExecutorService:
                         failures.append(FailedCheckDetail(
                             check_name=case.title, error_summary="Test case failed",
                             exit_code=result.exit_code, traceback_or_logs=result.stderr or result.stdout,
+                            command=case.test_code, stdout=result.stdout, stderr=result.stderr, sandbox_id=sandbox_id,
                         ))
+            if not plan.test_cases:
+                failures.append(FailedCheckDetail(check_name='generated_tests', error_summary='No executable test cases',
+                    exit_code=-1, traceback_or_logs='Verification cannot pass without generated tests.'))
             all_passed = not failures
             final = execution.model_copy(update={
+                "status": ExecutionStatus.SUCCESS if all_passed else ExecutionStatus.FAILED,
                 "all_passed": all_passed, "total_tests": len(plan.test_cases),
                 "passed_tests": passed, "failed_tests": failed,
                 "execution_duration_ms": int((monotonic() - started) * 1000),
-                "baseline_results": baseline_results,
+                "baseline_results": baseline_results, "command_results": self._commands,
                 "failure_report": None if all_passed else FailureReport(
                     summary="Mandatory baseline checks or test cases failed.",
+                    execution_id=execution.id, attempt=len(await self.repository.list_executions(task_id)),
                     failed_baseline_checks=[f for f in failures if f.check_name in {c.value for c in self.BASELINE_CHECKS}],
                     failed_test_cases=[f for f in failures if f.check_name not in {c.value for c in self.BASELINE_CHECKS}],
                 ),
             })
             await self.repository.add_execution(final)
             return final
+        except BaseException as exc:
+            import asyncio
+            reason = 'Execution cancelled.' if isinstance(exc, asyncio.CancelledError) else 'Sandbox execution unavailable.'
+            failed = execution.model_copy(update={'command_results': self._commands,
+                'status': ExecutionStatus.CANCELLED if isinstance(exc, asyncio.CancelledError) else ExecutionStatus.UNAVAILABLE,
+                'failure_report': FailureReport(summary=reason, execution_id=execution.id),
+                'execution_duration_ms': int((monotonic() - started) * 1000)})
+            await self.repository.add_execution(failed)
+            raise
         finally:
-            await self.sandbox.destroy_sandbox(sandbox_id)
+            if sandbox_id is not None:
+                await self.sandbox.destroy_sandbox(sandbox_id)
+
+    async def _execute_command(self, sandbox_id, command):
+        from backend.app.analysis.sanitizer import redact_secrets
+        started = _now()
+        result = await self.sandbox.execute_command(sandbox_id, command)
+        result = result.model_copy(update={'stdout': redact_secrets(result.stdout)[:64000],
+                                          'stderr': redact_secrets(result.stderr)[:64000]})
+        evidence = {'execution_id': str(self._execution_id), 'task_id': str(self._task_id),
+                    'sandbox_id': sandbox_id, 'command': redact_secrets(command.cmd),
+                    'status': 'timeout' if result.timed_out else 'success' if result.exit_code == 0 else 'failed',
+                    'exit_code': result.exit_code, 'stdout': result.stdout, 'stderr': result.stderr,
+                    'duration_ms': result.duration_ms, 'started_at': started.isoformat(),
+                    'completed_at': _now().isoformat()}
+        self._commands.append(evidence)
+        await self.repository.add_command_result(self._execution_id, evidence)
+        return result
 
     async def _run_check(self, sandbox_id: str, execution_id: UUID,
                          check: BaselineCheckType) -> BuildResult:
@@ -210,7 +249,7 @@ class TestExecutorService:
                                status=ExecutionStatus.NOT_APPLICABLE, exit_code=0,
                                stdout_output="No command configured for this project.",
                                duration_ms=0, created_at=_now())
-        result = await self.sandbox.execute_command(
+        result = await self._execute_command(
             sandbox_id, SandboxCommand(cmd=command, timeout_seconds=self.limits.timeout_seconds)
         )
         status = ExecutionStatus.SUCCESS if result.exit_code == 0 and not result.timed_out else (

@@ -8,9 +8,8 @@ from backend.app.services.workspace_service import WorkspaceService
 
 
 def _safe(value: str) -> str:
-    for marker in ("sk-", "GROQ_", "OPENAI_", "Bearer "):
-        value = value.replace(marker, "[REDACTED]")
-    return value
+    from backend.app.analysis.sanitizer import redact_secrets
+    return redact_secrets(value)
 
 
 class PlannerContextBuilder:
@@ -36,6 +35,8 @@ class PlannerContextBuilder:
         selected = [path for _, path in sorted(scored, reverse=True)[:8]]
         source: List[Dict[str, str]] = []
         for path in selected:
+            if path.rsplit("/", 1)[-1].startswith(".env"):
+                continue
             try:
                 content = await self.workspace_service.read_workspace_file(
                     task.workspace_id, path, task.user_id

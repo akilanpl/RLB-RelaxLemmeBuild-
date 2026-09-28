@@ -37,10 +37,6 @@ class ReviewerService:
         task = await self.workflow.get_task(task_id, user_id)
         existing = await self.repository.get_by_task(task_id)
         if existing is not None:
-            if task.status == WorkflowState.REVIEWING:
-                await self.workflow.transition(task_id, WorkflowState.COMPLETED, ActorType.SYSTEM, None,
-                    "Recovered persisted final review", {"reviewer_report_id": str(existing.id)},
-                    expected_version=task.version)
             return existing
         if task.status != WorkflowState.REVIEWING:
             raise ReviewerExecutionError("Task must be in REVIEWING before Reviewer execution.")
@@ -69,11 +65,9 @@ class ReviewerService:
             report = ReviewerReport(id=uuid4(), task_id=task_id, agent_run_id=run.id,
                 created_at=datetime.now(timezone.utc), **data)
             await self.repository.add(report)
-            await self.workflow.update_agent_run(run.id, ExecutionStatus.SUCCESS)
-            current = await self.workflow.get_task(task_id, user_id)
-            await self.workflow.transition(task_id, WorkflowState.COMPLETED, ActorType.SYSTEM, None,
-                "Reviewer submitted final report", {"reviewer_report_id": str(report.id)},
-                expected_version=current.version)
+            await self.workflow.update_agent_run(run.id, ExecutionStatus.SUCCESS,
+                prompt_tokens=agent_result.get('prompt_tokens'), completion_tokens=agent_result.get('completion_tokens'),
+                metadata=agent_result.get('metadata') or {})
             return report
         except Exception as exc:
             await self.workflow.update_agent_run(run.id, ExecutionStatus.FAILED, error_message=str(exc))

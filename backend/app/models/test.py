@@ -22,6 +22,7 @@ class TestCaseCategory(str, Enum):
     REGRESSION = "regression"
     EDGE_CASE = "edge_case"
     SECURITY = "security"
+    INTEGRATION = "integration"
 
 
 class TestCase(BaseModel):
@@ -65,6 +66,10 @@ class FailedCheckDetail(BaseModel):
     error_summary: str
     exit_code: int
     traceback_or_logs: str
+    command: Optional[str] = None
+    stdout: str = ""
+    stderr: str = ""
+    sandbox_id: Optional[str] = None
 
 
 class FailureReport(BaseModel):
@@ -73,12 +78,15 @@ class FailureReport(BaseModel):
     tests fail. Routes back to Coder to guide automated correction.
     """
     summary: str
+    attempt: int = 1
+    execution_id: Optional[UUID] = None
     failed_baseline_checks: List[FailedCheckDetail] = []
     failed_test_cases: List[FailedCheckDetail] = []
     remediation_suggestions: List[str] = []
 
 
 class TestExecution(BaseModel):
+    status: ExecutionStatus = ExecutionStatus.RUNNING
     id: UUID
     task_id: UUID
     agent_run_id: UUID
@@ -87,6 +95,7 @@ class TestExecution(BaseModel):
     passed_tests: int = 0
     failed_tests: int = 0
     execution_duration_ms: int = 0
+    command_results: List[Dict[str, Any]] = Field(default_factory=list)
     baseline_results: List[BuildResult] = Field(default_factory=list)
     failure_report: Optional[FailureReport] = None
     created_at: datetime
