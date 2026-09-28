@@ -120,7 +120,7 @@ export default function WorkspaceIdePage() {
 
   useEffect(() => {
     if (!task || !isAuthenticated) return;
-    const active = ['ready', 'planning', 'coding', 'test_planning', 'test_executing', 'reviewing', 'repairing'].includes(task.status);
+    const active = ['ready', 'analyzing', 'staging_setup', 'promoting', 'planning', 'coding', 'test_planning', 'test_executing', 'reviewing', 'repairing'].includes(task.status);
     if (!active) return;
     const timer = window.setInterval(() => {
       void (async () => {
@@ -295,7 +295,7 @@ export default function WorkspaceIdePage() {
         current
           ? {
               ...current,
-              status: decision === 'approved' ? 'coding' : decision === 'rejected' ? 'cancelled' : 'planning',
+              status: decision === 'approved' ? 'staging_setup' : decision === 'rejected' ? 'cancelled' : 'planning',
             }
           : current,
       );

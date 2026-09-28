@@ -14,19 +14,27 @@ async def promote_snapshot(sessions, storage, workspace, staging, proposal, task
     files = []
     digest = hashlib.sha256()
     prefix = staging.staging_root_path.rstrip('/') + '/'
-    for path in sorted(await storage.list_files(staging.staging_root_path)):
-        if not path.startswith(prefix):
-            raise ValueError('Staging file escaped snapshot prefix.')
-        relative = path[len(prefix):]
-        content = await storage.read_file(path)
-        await storage.write_file(f'{root}/{relative}', content)
-        digest.update(relative.encode() + b'\0' + content + b'\0')
-        files.append({'path': relative, 'size': len(content), 'hash': hashlib.sha256(content).hexdigest()})
+    try:
+        for path in sorted(await storage.list_files(staging.staging_root_path)):
+            if not path.startswith(prefix):
+                raise ValueError('Staging file escaped snapshot prefix.')
+            relative = path[len(prefix):]
+            content = await storage.read_file(path)
+            await storage.write_file(f'{root}/{relative}', content)
+            digest.update(relative.encode() + b'\0' + content + b'\0')
+            files.append({'path': relative, 'size': len(content), 'hash': hashlib.sha256(content).hexdigest()})
+    except BaseException:
+        # No database pointer exists yet: only this unpublished prefix is safe to remove.
+        try:
+            await storage.delete_directory(root)
+        except Exception:
+            pass  # Retention tooling can retry unreferenced objects later.
+        raise
     snapshot = digest.hexdigest()
     now = datetime.now(timezone.utc)
     transition = TransitionRecord(id=uuid4(), task_id=task.id,
-        previous_state=WorkflowState.CODE_REVIEW, new_state=WorkflowState.TEST_PLANNING,
-        actor_type=ActorType.USER, actor_id=user_id, reason='approved code',
+        previous_state=task.status, new_state=WorkflowState.TEST_PLANNING,
+        actor_type=ActorType.SYSTEM if task.status == WorkflowState.PROMOTING else ActorType.USER, actor_id=user_id, reason='approved code',
         metadata={'proposal_id': str(proposal.id), 'snapshot': snapshot}, timestamp=now,
         task_version_before=task.version, task_version_after=task.version + 1)
     async with sessions.begin() as session:
@@ -38,7 +46,7 @@ async def promote_snapshot(sessions, storage, workspace, staging, proposal, task
             FOR UPDATE OF w, t, p
         '''), {'workspace': workspace.id, 'user': user_id, 'task': task.id,
                'proposal': proposal.id})).mappings().first()
-        if (not current or current['status'] != 'code_review' or current['version'] != task.version
+        if (not current or current['status'] != task.status.value or current['version'] != task.version
                 or current['proposal_status'] != 'ready_for_review'
                 or (current['current_snapshot_hash'] or 'empty-root') != (proposal.base_snapshot_hash or 'empty-root')):
             raise ValueError('Workspace or proposal changed before approval. Reload the review.')
@@ -54,10 +62,11 @@ async def promote_snapshot(sessions, storage, workspace, staging, proposal, task
                 ON CONFLICT (workspace_id,relative_path) DO UPDATE SET
                     size_bytes=EXCLUDED.size_bytes,sha256_hash=EXCLUDED.sha256_hash,
                     is_deleted=FALSE,updated_at=NOW()'''), {**file, 'id': uuid4(), 'workspace': workspace.id})
-        await session.execute(text('''INSERT INTO approvals
-            (id,task_id,gate_type,status,reviewed_by,created_at,resolved_at)
-            VALUES (:id,:task,'code','approved',:user,:now,:now)'''),
-            {'id': uuid4(), 'task': task.id, 'user': user_id, 'now': now})
+        if task.status == WorkflowState.CODE_REVIEW:
+            await session.execute(text('''INSERT INTO approvals
+                (id,task_id,gate_type,status,reviewed_by,created_at,resolved_at)
+                VALUES (:id,:task,'code','approved',:user,:now,:now)'''),
+                {'id': uuid4(), 'task': task.id, 'user': user_id, 'now': now})
         await session.execute(text("UPDATE code_proposals SET status='applied' WHERE id=:id"), {'id': proposal.id})
         await session.execute(text('''UPDATE tasks SET status='test_planning', version=version+1,
             approved_snapshot_hash=:hash, updated_at=:now WHERE id=:id'''),

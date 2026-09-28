@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Dict, Optional
+from typing import Dict, Optional, Protocol
 from uuid import UUID, uuid4
 
 from backend.app.services.task_service import TaskAccessDeniedError, TaskNotFoundError, WorkflowEngine
@@ -29,6 +29,19 @@ class Job:
     lease_until: Optional[datetime] = None
     attempts: int = 0
     error: Optional[str] = None
+    completed_by: Optional[str] = None
+
+
+class JobQueue(Protocol):
+    workflow: WorkflowEngine
+    lease_seconds: int
+    async def enqueue(self, task_id: UUID, user_id: UUID): ...
+    async def claim(self, worker_id: str): ...
+    async def heartbeat(self, job_id: UUID, worker_id: str): ...
+    async def complete(self, job_id: UUID, worker_id: str): ...
+    async def fail(self, job_id: UUID, worker_id: str, error: str): ...
+    async def release(self, job_id: UUID, worker_id: str): ...
+    async def wait_for_approval(self, job_id: UUID, worker_id: str): ...
 
 
 class LocalJobQueue:
@@ -64,7 +77,7 @@ class LocalJobQueue:
                 if job.status != JobStatus.PENDING:
                     continue
                 task = await self.workflow.get_task(job.task_id, job.user_id)
-                if task.status in {WorkflowState.CANCELLED, WorkflowState.COMPLETED}:
+                if task.status in {WorkflowState.CANCELLED, WorkflowState.COMPLETED, WorkflowState.FAILED}:
                     job.status = JobStatus.COMPLETED
                     continue
                 job.status = JobStatus.RUNNING
@@ -85,8 +98,11 @@ class LocalJobQueue:
     async def complete(self, job_id: UUID, worker_id: str) -> Job:
         async with self._lock:
             job = self.jobs[job_id]
+            if job.status == JobStatus.COMPLETED and job.completed_by == worker_id:
+                return job
             self._assert_owner(job, worker_id)
             job.status = JobStatus.COMPLETED
+            job.completed_by = worker_id
             job.lease_owner = job.lease_until = None
             return job
 
@@ -96,6 +112,14 @@ class LocalJobQueue:
             self._assert_owner(job, worker_id)
             job.status = JobStatus.FAILED
             job.error = error
+            job.lease_owner = job.lease_until = None
+            return job
+
+    async def release(self, job_id: UUID, worker_id: str) -> Job:
+        async with self._lock:
+            job = self.jobs[job_id]
+            self._assert_owner(job, worker_id)
+            job.status = JobStatus.PENDING
             job.lease_owner = job.lease_until = None
             return job
 

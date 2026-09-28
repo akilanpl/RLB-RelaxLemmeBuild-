@@ -40,7 +40,9 @@ export function BottomPanel({
         const executions = await apiClient.getTestExecutions(taskId, userId);
         const latest = executions[executions.length - 1];
         if (active) {
-          setTerminalLines(latest?.baseline_results.flatMap((result) => [
+          setTerminalLines(latest?.command_results?.length ? latest.command_results.flatMap((result) => [
+            `$ ${result.command}`, `[${result.status}] ${result.duration_ms} ms`, result.stdout, result.stderr,
+          ]).filter(Boolean) : latest?.baseline_results.flatMap((result) => [
             `[${result.check_type}] ${result.status}`,
             result.stdout_output || '', result.stderr_output || '',
           ]).filter(Boolean) ?? []);

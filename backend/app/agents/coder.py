@@ -19,4 +19,5 @@ class CoderAgent(BaseAgent):
         return AgentRole.CODER
 
     async def execute(self, context: AgentExecutionContext) -> CodeProposal:
-        raise NotImplementedError("Phase 1 implementation")
+        from backend.app.services.runtime import get_runtime
+        return await get_runtime().agents.coder.execute(context.task_id, context.user_id)

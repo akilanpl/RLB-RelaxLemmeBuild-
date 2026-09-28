@@ -31,9 +31,9 @@ class SupabaseQueueClient:
                 return None
             receipt = row['msg_id']
             payload = row['message']
-            if isinstance(payload, str):
-                payload = json.loads(payload)
             try:
+                if isinstance(payload, str):
+                    payload = json.loads(payload)
                 task_id = UUID(payload['task_id'])
             except (KeyError, ValueError, TypeError):
                 await conn.execute(text('SELECT pgmq.archive(:name, :id)'), {'name': name, 'id': receipt})

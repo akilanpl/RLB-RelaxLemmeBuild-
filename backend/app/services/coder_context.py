@@ -6,9 +6,8 @@ from backend.app.models.coder import CoderContext
 
 
 def _safe(value: str) -> str:
-    for marker in ("sk-", "GROQ_", "OPENAI_", "Bearer "):
-        value = value.replace(marker, "[REDACTED]")
-    return value
+    from backend.app.analysis.sanitizer import redact_secrets
+    return redact_secrets(value)
 
 
 class CoderContextBuilder:
@@ -21,7 +20,9 @@ class CoderContextBuilder:
         if staging_id is None:
             raise RuntimeError("An active staging workspace is required before coding.")
         files = []
-        for path in await self.staging_service.list_staging_files(staging_id, task.user_id):
+        for path in (await self.staging_service.list_staging_files(staging_id, task.user_id))[:100]:
+            if path.rsplit("/", 1)[-1].startswith(".env"):
+                continue
             try:
                 content = await self.staging_service.read_staging_file(
                     staging_id, path, task.user_id

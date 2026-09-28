@@ -46,56 +46,23 @@ class WorkflowEvent(str, Enum):
     RESET = "reset"
 
 
-# Allowed state transitions matrix
-VALID_TRANSITIONS: Dict[WorkflowState, Dict[WorkflowEvent, WorkflowState]] = {
-    WorkflowState.IDLE: {
-        WorkflowEvent.IMPORT_REPO: WorkflowState.ANALYZING,
-    },
-    WorkflowState.ANALYZING: {
-        WorkflowEvent.ANALYSIS_COMPLETE: WorkflowState.READY,
-    },
-    WorkflowState.READY: {
-        WorkflowEvent.START_TASK: WorkflowState.PLANNING,
-    },
-    WorkflowState.PLANNING: {
-        WorkflowEvent.PLAN_GENERATED: WorkflowState.PLAN_REVIEW,
-    },
-    WorkflowState.PLAN_REVIEW: {
-        WorkflowEvent.PLAN_APPROVED: WorkflowState.STAGING_SETUP,
-        WorkflowEvent.PLAN_REVISION_REQUESTED: WorkflowState.PLANNING,
-        WorkflowEvent.PLAN_REJECTED: WorkflowState.CANCELLED,
-    },
-    WorkflowState.STAGING_SETUP: {
-        WorkflowEvent.STAGING_READY: WorkflowState.CODING,
-    },
-    WorkflowState.CODING: {
-        WorkflowEvent.DIFF_PROPOSED: WorkflowState.CODE_REVIEW,
-    },
-    WorkflowState.CODE_REVIEW: {
-        WorkflowEvent.CODE_APPROVED: WorkflowState.PROMOTING,
-        WorkflowEvent.CODE_REVISION_REQUESTED: WorkflowState.CODING,
-        WorkflowEvent.CODE_REJECTED: WorkflowState.STAGING_CLEANUP,
-    },
-    WorkflowState.STAGING_CLEANUP: {
-        WorkflowEvent.STAGING_CLEARED: WorkflowState.READY,
-    },
-    WorkflowState.PROMOTING: {
-        WorkflowEvent.PATCH_PROMOTED: WorkflowState.TEST_PLANNING,
-    },
-    WorkflowState.TEST_PLANNING: {
-        WorkflowEvent.TEST_PLAN_GENERATED: WorkflowState.TEST_EXECUTING,
-    },
-    WorkflowState.TEST_EXECUTING: {
-        WorkflowEvent.TESTS_PASSED: WorkflowState.REVIEWING,
-        WorkflowEvent.TESTS_FAILED: WorkflowState.CODING,  # Automated failure loopback to Coder
-    },
-    WorkflowState.REVIEWING: {
-        WorkflowEvent.REVIEW_SUBMITTED: WorkflowState.COMPLETED,
-    },
-    WorkflowState.COMPLETED: {
-        WorkflowEvent.RESET: WorkflowState.READY,
-    },
-    WorkflowState.CANCELLED: {
-        WorkflowEvent.RESET: WorkflowState.READY,
-    },
+TRANSITIONS = {
+    WorkflowState.READY: {WorkflowState.ANALYZING, WorkflowState.PLANNING, WorkflowState.CANCELLED},
+    WorkflowState.ANALYZING: {WorkflowState.PLANNING, WorkflowState.FAILED},
+    WorkflowState.PLANNING: {WorkflowState.PLAN_REVIEW, WorkflowState.FAILED},
+    WorkflowState.PLAN_REVIEW: {WorkflowState.STAGING_SETUP, WorkflowState.PLANNING, WorkflowState.CODING, WorkflowState.CANCELLED},
+    WorkflowState.STAGING_SETUP: {WorkflowState.CODING, WorkflowState.FAILED},
+    WorkflowState.PROMOTING: {WorkflowState.TEST_PLANNING, WorkflowState.FAILED},
+    WorkflowState.CODING: {WorkflowState.CODE_REVIEW, WorkflowState.FAILED},
+    WorkflowState.CODE_REVIEW: {WorkflowState.PROMOTING, WorkflowState.CODING, WorkflowState.TEST_PLANNING, WorkflowState.CANCELLED},
+    WorkflowState.TEST_PLANNING: {WorkflowState.TEST_EXECUTING, WorkflowState.FAILED},
+    WorkflowState.TEST_EXECUTING: {WorkflowState.REPAIRING, WorkflowState.REVIEWING, WorkflowState.FAILED},
+    WorkflowState.REPAIRING: {WorkflowState.CODING, WorkflowState.FAILED},
+    WorkflowState.REVIEWING: {WorkflowState.COMPLETED, WorkflowState.FAILED},
+    WorkflowState.COMPLETED: {WorkflowState.READY},
 }
+
+# Cancellation is a server-validated terminal operation from any active stage.
+for _state in tuple(TRANSITIONS):
+    if _state not in {WorkflowState.COMPLETED, WorkflowState.CANCELLED, WorkflowState.FAILED}:
+        TRANSITIONS[_state].add(WorkflowState.CANCELLED)

@@ -28,13 +28,14 @@ def active_agent_services() -> AgentServices | None:
     return _active_services
 
 
-def build_agent_services() -> AgentServices:
+def build_agent_services(workflow=None, staging=None) -> AgentServices:
     """Build one resolver and share it across all LLM-backed services."""
     global _active_services
     sessions = get_sessionmaker()
     resolver = RuntimeResolver(
         repository=PostgresProviderRepository(sessions) if sessions else None
     )
+    resolver.workflow = workflow
     settings = get_settings()
     resolver.max_calls = settings.MAX_AI_CALLS_PER_TASK
     resolver.max_output_tokens = settings.MAX_AI_OUTPUT_TOKENS
@@ -52,9 +53,9 @@ def build_agent_services() -> AgentServices:
     )
     services = AgentServices(
         resolver=resolver,
-        planner=PlannerService(gateway=planner_gateway, runtime_resolver=resolver),
-        coder=CoderService(gateway=coder_gateway, runtime_resolver=resolver),
-        reviewer=ReviewerService(gateway=reviewer_gateway, runtime_resolver=resolver),
+        planner=PlannerService(gateway=planner_gateway, runtime_resolver=resolver, workflow=workflow),
+        coder=CoderService(gateway=coder_gateway, runtime_resolver=resolver, workflow=workflow, staging_service=staging),
+        reviewer=ReviewerService(gateway=reviewer_gateway, runtime_resolver=resolver, workflow=workflow),
     )
     _active_services = services
     return services

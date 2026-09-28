@@ -2,7 +2,7 @@
 
 import os
 from functools import lru_cache
-from typing import List, Optional
+from typing import List, Optional, Literal
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -18,10 +18,11 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",
+        hide_input_in_errors=True,
     )
 
     PROJECT_NAME: str = "Cloud AI Software Engineering Workspace"
-    ENVIRONMENT: str = Field(default="development", description="Runtime environment: development | staging | production")
+    ENVIRONMENT: Literal["development", "test", "staging", "production"] = Field(default="development", description="Runtime environment: development | staging | production")
     DEBUG: bool = Field(default=False)
     API_V1_PREFIX: str = "/api/v1"
 
@@ -78,6 +79,9 @@ class Settings(BaseSettings):
     )
     RUN_EMBEDDED_WORKER: Optional[bool] = None
     WORKER_POLL_SECONDS: float = Field(default=1.0, gt=0)
+
+    MAX_REPAIR_ATTEMPTS: int = Field(default=3, ge=0, le=20)
+    MAX_TASKS_PER_USER_PER_HOUR: int = Field(default=30, ge=1)
 
     MAX_AI_CALLS_PER_TASK: int = Field(default=20, ge=1)
     MAX_AI_OUTPUT_TOKENS: int = Field(default=8192, ge=1)

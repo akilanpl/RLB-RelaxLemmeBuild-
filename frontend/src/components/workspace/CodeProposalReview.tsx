@@ -14,7 +14,7 @@ const DiffEditor = dynamic(
 interface Props {
   taskId: string;
   userId?: string;
-  onStatusChange?: (status: 'coding' | 'cancelled' | 'test_planning') => void;
+  onStatusChange?: (status: 'coding' | 'cancelled' | 'test_planning' | 'promoting') => void;
   onApplied?: () => void;
 }
 
@@ -58,7 +58,7 @@ export default function CodeProposalReview({ taskId, userId, onStatusChange, onA
     try {
       if (kind === 'approve') {
         await apiClient.approveCodeProposal(proposal.id, userId);
-        onStatusChange?.('test_planning');
+        onStatusChange?.('promoting');
         onApplied?.();
       }
       if (kind === 'reject') {

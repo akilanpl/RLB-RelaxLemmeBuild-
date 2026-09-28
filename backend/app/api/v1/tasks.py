@@ -10,7 +10,7 @@ from backend.app.core.auth import AuthenticatedUserContext, get_authenticated_us
 from backend.app.models.agent import AgentRole, ExecutionStatus
 from backend.app.models.task import ActorType
 from backend.app.services.task_service import (
-    InvalidWorkflowTransitionError, TaskAccessDeniedError, TaskNotFoundError,
+    InvalidWorkflowTransitionError, TaskAccessDeniedError, TaskNotFoundError, TaskRateLimitError,
     WorkflowConflictError, workflow_engine,
 )
 from backend.app.services.workspace_service import WorkspaceNotFoundError
@@ -30,14 +30,11 @@ from backend.app.db.session import get_engine
 from backend.app.core.config import get_settings
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
-_sessionmaker = get_sessionmaker()
-testing_repository = PostgresTestingRepository(_sessionmaker) if _sessionmaker else InMemoryTestingRepository()
-reviewer_repository = PostgresReviewerReportRepository(_sessionmaker) if _sessionmaker else InMemoryReviewerReportRepository()
-reviewer_service = ReviewerService(repository=reviewer_repository)
-job_queue = (SupabaseQueueAdapter(SupabaseQueueClient(get_engine()),
-             get_settings().SUPABASE_QUEUE_NAME, workflow_engine)
-             if get_settings().ENVIRONMENT in {"staging", "production"} and _sessionmaker
-             else LocalJobQueue(workflow_engine))
+from backend.app.services.runtime import RuntimeRef
+testing_repository = RuntimeRef("testing")
+reviewer_repository = RuntimeRef("agents.reviewer.repository")
+reviewer_service = RuntimeRef("agents.reviewer")
+job_queue = RuntimeRef("queue")
 
 
 def configure_agent_services(services) -> None:
@@ -54,7 +51,7 @@ def configure_agent_services(services) -> None:
 class CreateTaskRequest(BaseModel):
     workspace_id: UUID
     title: str = Field(min_length=1, max_length=200)
-    objective: str = Field(min_length=1)
+    objective: str = Field(min_length=1, max_length=20000)
 
 
 class TransitionRequest(BaseModel):
@@ -91,14 +88,21 @@ async def create_task(request: CreateTaskRequest, auth: AuthenticatedUserContext
         task = await workflow_engine.create_task(workspace, auth.user_id, request.title, request.objective)
         await job_queue.enqueue(task.id, auth.user_id)
         return task
+    except TaskRateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "3600"})
     except WorkspaceNotFoundError:
         raise HTTPException(status_code=404, detail="Workspace not found.")
     except (TaskAccessDeniedError, PermissionError):
         raise HTTPException(status_code=403, detail="Workspace access denied.")
 
 
-def _get_task_or_error(task_id: UUID, auth: AuthenticatedUserContext):
-    return workflow_engine.get_task(task_id, auth.user_id)
+async def _get_task_or_error(task_id: UUID, auth: AuthenticatedUserContext):
+    try:
+        return await workflow_engine.get_task(task_id, auth.user_id)
+    except TaskNotFoundError:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    except TaskAccessDeniedError:
+        raise HTTPException(status_code=403, detail="Task access denied.")
 
 
 @router.get("/workspace/{workspace_id}/latest")
@@ -166,7 +170,7 @@ async def record_approval(task_id: UUID, request: ApprovalRequest, auth: Authent
     try:
         if request.approval_type == "code" and request.status == "approved":
             raise HTTPException(status_code=409, detail="Approve a specific code proposal to apply its reviewed changes.")
-        approval = await workflow_engine.record_approval(task_id, auth.user_id, request.approval_type, request.status, request.feedback)
+        approval = await workflow_engine.record_approval(task_id, auth.user_id, request.approval_type, request.status, request.feedback, defer_setup=True)
         if request.status in {"approved", "revision_requested"}:
             await job_queue.enqueue(task_id, auth.user_id)
         return approval
@@ -310,10 +314,9 @@ async def create_test_plan(
 async def execute_tests(
     task_id: UUID, auth: AuthenticatedUserContext = Depends(get_authenticated_user)
 ):
-    raise HTTPException(
-        status_code=503,
-        detail="No isolated sandbox execution driver is configured.",
-    )
+    await _get_task_or_error(task_id, auth)
+    await job_queue.enqueue(task_id, auth.user_id)
+    return {"status": "queued", "task_id": task_id}
 
 
 @router.get("/{task_id}/test-executions")
@@ -356,7 +359,7 @@ async def approve_code_proposal(
     proposal_id: UUID, auth: AuthenticatedUserContext = Depends(get_authenticated_user)
 ):
     try:
-        result = await coder_service.approve_and_apply(proposal_id, auth.user_id)
+        result = await coder_service.request_promotion(proposal_id, auth.user_id)
         proposal = await coder_service.proposals.get(proposal_id)
         await job_queue.enqueue(proposal.task_id, auth.user_id)
         return result
@@ -442,3 +445,21 @@ async def resume_task(task_id: UUID, auth: AuthenticatedUserContext = Depends(ge
         return {"task_id": task_id, "status": "queued"}
     except (TaskNotFoundError, TaskAccessDeniedError):
         raise HTTPException(status_code=404, detail="Task not found.")
+
+
+@router.get('/{task_id}/events')
+async def get_task_events(task_id: UUID, after: int = 0, auth: AuthenticatedUserContext = Depends(get_authenticated_user)):
+    task = await _get_task_or_error(task_id, auth)
+    sessions = get_sessionmaker()
+    if sessions:
+        from sqlalchemy import text
+        async with sessions() as session:
+            rows = (await session.execute(text("""SELECT * FROM task_events
+                WHERE task_id=:task AND sequence > :after ORDER BY sequence LIMIT 200"""),
+                {'task': task_id, 'after': max(after, 0)})).mappings().all()
+            return [dict(row) for row in rows]
+    history = await workflow_engine.get_history(task.id, auth.user_id)
+    return [{'sequence': index + 1, 'task_id': task.id, 'workspace_id': task.workspace_id,
+             'event_type': 'task.' + item.new_state.value, 'actor_type': item.actor_type,
+             'payload': item.metadata, 'created_at': item.timestamp}
+            for index, item in enumerate(history) if index + 1 > after][:200]

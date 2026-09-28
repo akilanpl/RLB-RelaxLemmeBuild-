@@ -365,7 +365,7 @@ class WorkspaceService:
         updated = workspace.model_copy(update={
             "file_count": len(records),
             "total_size_bytes": total_bytes,
-            "current_snapshot_hash": digest.hexdigest() if records else (workspace.current_snapshot_hash or "empty-root"),
+            "current_snapshot_hash": digest.hexdigest(),
             "updated_at": datetime.now(timezone.utc),
         })
         _MEMORY_WORKSPACES[workspace.id] = updated

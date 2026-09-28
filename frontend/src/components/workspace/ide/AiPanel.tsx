@@ -28,6 +28,9 @@ interface Props {
 
 const STATUS_COPY: Record<string, string> = {
   ready: 'Ready for planning',
+  analyzing: 'Analyzing repository…',
+  staging_setup: 'Preparing isolated staging…',
+  promoting: 'Publishing approved snapshot…',
   planning: 'Planner analyzing workspace…',
   plan_review: 'Plan ready for approval',
   coding: 'Coder preparing staged changes…',

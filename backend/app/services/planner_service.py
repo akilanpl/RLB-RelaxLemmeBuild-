@@ -105,4 +105,5 @@ class PlannerService:
             raise PlannerExecutionError("Planner execution failed.") from exc
 
 
-planner_service = PlannerService()
+from backend.app.services.runtime import RuntimeRef
+planner_service = RuntimeRef("agents.planner")

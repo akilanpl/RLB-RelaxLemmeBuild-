@@ -38,7 +38,7 @@ class StagingService:
         storage: Optional[BaseStorageBackend] = None
     ):
         self.workspace_service = workspace_service or WorkspaceService(storage)
-        self.storage = storage or get_storage_backend()
+        self.storage = storage or self.workspace_service.storage
 
     async def create_staging_workspace(
         self,

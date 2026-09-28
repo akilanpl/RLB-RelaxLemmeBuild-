@@ -67,9 +67,29 @@ class InMemoryTaskRepository:
         self.states: Dict[UUID, List[AgentStateRecord]] = {}
         self.plans: Dict[UUID, List[PersistedPlan]] = {}
         self.messages: Dict[UUID, List[Dict[str, Any]]] = {}
+        self.ai_calls = {}
+        self.provider_calls = {}
         self._lock = asyncio.Lock()
 
+    async def reserve_ai_call(self, task_id, limit):
+        async with self._lock:
+            count = self.ai_calls.get(task_id, 0)
+            if count >= limit:
+                return False
+            self.ai_calls[task_id] = count + 1
+            return True
+
+    async def record_provider_call(self, task_id, evidence):
+        self.provider_calls.setdefault(task_id, []).append(evidence)
+
     async def create(self, task):
+        from backend.app.core.config import get_settings
+        from backend.app.services.task_service import TaskRateLimitError
+        from datetime import timedelta
+        recent = sum(t.user_id == task.user_id and t.created_at > task.created_at - timedelta(hours=1)
+                     for t in self.tasks.values())
+        if recent >= get_settings().MAX_TASKS_PER_USER_PER_HOUR:
+            raise TaskRateLimitError('Task submission limit reached. Retry later.')
         self.tasks[task.id] = task
         self.histories[task.id] = []
         self.messages[task.id] = [{"sender_type": "user", "content": task.objective, "metadata": {"task_id": str(task.id)}}]
@@ -84,7 +104,7 @@ class InMemoryTaskRepository:
             task = self.tasks.get(task_id)
             if not task or (expected_version is not None and task.version != expected_version): return None
             self.tasks[task_id] = task.model_copy(update={"status": target, "version": task.version + 1,
-                                                           "updated_at": transition.timestamp})
+                                                           "updated_at": transition.timestamp, "approved_snapshot_hash": transition.metadata.get("snapshot", task.approved_snapshot_hash)})
             self.histories.setdefault(task_id, []).append(transition)
             return self.tasks[task_id]
     async def add_approval(self, approval): self.approvals.setdefault(approval.task_id, []).append(approval); return approval
@@ -94,7 +114,9 @@ class InMemoryTaskRepository:
             if not task or (expected_version is not None and task.version != expected_version):
                 return None
             self.approvals.setdefault(approval.task_id, []).append(approval)
-            self.tasks[approval.task_id] = task.model_copy(update={"status": target, "version": task.version + 1, "updated_at": transition.timestamp})
+            self.tasks[approval.task_id] = task.model_copy(update={"status": target, "version": task.version + 1, "updated_at": transition.timestamp,
+                "approved_snapshot_hash": transition.metadata.get("snapshot", task.approved_snapshot_hash),
+                "approved_proposal_id": UUID(transition.metadata["proposal_id"]) if transition.metadata.get("proposal_id") else task.approved_proposal_id})
             self.histories.setdefault(approval.task_id, []).append(transition)
             return self.tasks[approval.task_id]
     async def add_run(self, run): self.runs[run.id] = run; return run
@@ -165,13 +187,36 @@ class PostgresTaskRepository:
         return TaskRecord(id=row["id"], workspace_id=row["workspace_id"], conversation_id=row["conversation_id"],
             user_id=row["user_id"], title=row["title"], objective=row["objective"], user_prompt=row["user_prompt"],
             status=WorkflowState(row["status"]), version=row["version"], approved_snapshot_hash=row["approved_snapshot_hash"],
+            approved_proposal_id=row.get("approved_proposal_id"),
             active_loadout_id=row.get("active_loadout_id"),
             worker_overrides=_json_map(row.get("worker_overrides")),
             active_staging_workspace_id=row.get("active_staging_workspace_id"),
             created_at=_dt(row["created_at"]), updated_at=_dt(row["updated_at"]))
 
+    async def reserve_ai_call(self, task_id, limit):
+        async with self.sessions.begin() as session:
+            result = await session.execute(text("""UPDATE tasks SET ai_call_count=ai_call_count+1
+                WHERE id=:id AND ai_call_count < :limit RETURNING ai_call_count"""),
+                {'id': task_id, 'limit': limit})
+            return result.scalar() is not None
+
+    async def record_provider_call(self, task_id, evidence):
+        async with self.sessions.begin() as session:
+            await session.execute(text("""INSERT INTO provider_calls (task_id, evidence)
+                VALUES (:task, CAST(:evidence AS jsonb))"""),
+                {'task': task_id, 'evidence': json.dumps(evidence)})
+
     async def create(self, task):
         async with self.sessions.begin() as s:
+            from backend.app.core.config import get_settings
+            await s.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                            {'key': 'rlb-submit-' + str(task.user_id)})
+            count = (await s.execute(text("""SELECT count(*) FROM tasks
+                WHERE user_id=:user AND created_at > now() - interval '1 hour'"""),
+                {'user': task.user_id})).scalar_one()
+            if count >= get_settings().MAX_TASKS_PER_USER_PER_HOUR:
+                from backend.app.services.task_service import TaskRateLimitError
+                raise TaskRateLimitError('Task submission limit reached. Retry later.')
             loadout = (await s.execute(text(
                 "SELECT active_loadout_id FROM workspace_settings WHERE workspace_id=:workspace_id"
             ), {"workspace_id": task.workspace_id})).scalar()
@@ -249,8 +294,9 @@ class PostgresTaskRepository:
     async def approve_and_transition(self, approval, target, transition, expected_version):
         async with self.sessions.begin() as s:
             result = await s.execute(text("""UPDATE tasks SET status=:target, version=version+1,
+                approved_proposal_id=COALESCE(CAST(:proposal AS uuid),approved_proposal_id),
                 updated_at=:updated_at WHERE id=:id AND version=:expected RETURNING *"""), {
-                "target": target.value, "updated_at": transition.timestamp,
+                "target": target.value, "updated_at": transition.timestamp, "proposal": transition.metadata.get("proposal_id"),
                 "id": approval.task_id, "expected": expected_version,
             })
             row = result.mappings().first()
@@ -338,12 +384,13 @@ class PostgresTaskRepository:
 
     async def update_run(self, run):
         async with self.sessions.begin() as s:
-            await s.execute(text("""UPDATE agent_runs SET execution_status=:status,
+            await s.execute(text("""UPDATE agent_runs SET execution_status=:status, worker_id=:worker, provider_id=:provider, model_name=:model,
                 started_at=:started, completed_at=:completed, fallback_used=:fallback,
                 fallback_reason=:fallback_reason, prompt_tokens=:prompt_tokens,
                 completion_tokens=:completion_tokens, error_message=:error_message
                 WHERE id=:id"""), {
-                "id": run.id, "status": run.status.value, "started": run.started_at,
+                "id": run.id, "worker": run.worker_id, "provider": run.provider_id, "model": run.model_name,
+                "status": run.status.value, "started": run.started_at,
                 "completed": run.completed_at, "fallback": run.fallback_used,
                 "fallback_reason": run.fallback_reason, "prompt_tokens": run.prompt_tokens,
                 "completion_tokens": run.completion_tokens,

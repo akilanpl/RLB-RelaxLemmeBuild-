@@ -14,11 +14,12 @@ from backend.app.workflow.states import WorkflowState
 
 class TestOrchestrationService:
     def __init__(self, workflow: WorkflowEngine, repository: TestingRepository,
-                 sandbox: BaseSandboxDriver, runtime_resolver=None):
+                 sandbox: BaseSandboxDriver, runtime_resolver=None, proposals=None):
         self.workflow = workflow
         self.repository = repository
         self.sandbox = sandbox
         self.runtime_resolver = runtime_resolver
+        self.proposals = proposals
 
     async def plan_and_execute(self, task_id: UUID, user_id: UUID):
         task = await self.workflow.get_task(task_id, user_id)
@@ -39,6 +40,9 @@ class TestOrchestrationService:
                 context = await PlannerContextBuilder(self.workflow.workspace_service).build(task)
                 context["approved_plans"] = [p.model_dump(mode="json") for p in
                     await self.workflow.list_plans(task_id, user_id)]
+                if self.proposals is not None:
+                    proposals = await self.proposals.list_by_task(task_id)
+                    context['approved_changes'] = [p.model_dump(mode='json') for p in proposals[:1]]
                 plan = await TestArchitectService(self.repository, runtime.gateway if runtime else None).create_plan(
                     task_id, architect_run.id, task.objective, context=context,
                 )
@@ -74,7 +78,11 @@ class TestOrchestrationService:
             ).execute(
                 task_id, executor_run.id, workspace.id, workspace.canonical_root_path, plan
             )
-            status = WorkflowState.REVIEWING if execution.all_passed else WorkflowState.REPAIRING
+            history = await self.workflow.get_history(task_id, user_id)
+            repair_count = sum(item.new_state == WorkflowState.REPAIRING for item in history)
+            status = (WorkflowState.REVIEWING if execution.all_passed else
+                      WorkflowState.FAILED if repair_count >= get_settings().MAX_REPAIR_ATTEMPTS else
+                      WorkflowState.REPAIRING)
             await self.workflow.update_agent_run(
                 executor_run.id,
                 ExecutionStatus.SUCCESS if execution.all_passed else ExecutionStatus.FAILED,
@@ -92,7 +100,8 @@ class TestOrchestrationService:
                 executor_run.id, ExecutionStatus.FAILED, error_message=str(exc)
             )
             current = await self.workflow.get_task(task_id, user_id)
-            if current.status == WorkflowState.TEST_EXECUTING:
+            from backend.app.services.durable_worker import _transient
+            if current.status == WorkflowState.TEST_EXECUTING and not _transient(exc):
                 await self.workflow.transition(
                     task_id, WorkflowState.FAILED, ActorType.SYSTEM, None,
                     "Sandbox execution failed", {"error": str(exc)},

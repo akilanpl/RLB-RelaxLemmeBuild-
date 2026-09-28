@@ -266,11 +266,16 @@ the workflow state machine, provider abstraction, loadouts, persistence, test
 orchestration, the frontend workspace experience, durable worker execution,
 and the security boundaries described above.
 
-**Still actively being built:** a fully provisioned isolated production
-sandbox (local execution today, Daytona integration path in progress), a
-broader provider ecosystem beyond Groq, and connected-mode features like
-GitHub/GitLab-style repository sync — all explicitly on the roadmap, not
-pretended into existence early.
+**Locally verified, pending hosted acceptance:** the Daytona SDK adapter,
+Supabase queue/storage composition, encrypted provider runtime and transient
+fallback are implemented. Local acceptance uses deterministic doubles; project
+commands never execute on the API host. The existing cloud accounts were
+intentionally unused in this engineering pass. Real Auth/RLS, queue recovery,
+transactional promotion and Daytona execution still require staging validation.
+Git URL import remains a note-only UI option; use ZIP import for the working flow.
+
+See [local commands](docs/LOCAL_DEVELOPMENT.md), [hosted setup](docs/HOSTED_SETUP.md),
+and [engineering verification](docs/ENGINEERING_VERIFICATION.md).
 
 So the fair description is:
 
