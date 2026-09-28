@@ -8,3 +8,5 @@ PyJWT>=2.8,<3
 cryptography>=42
 python-multipart
 daytona==0.218.0
+
+greenlet
