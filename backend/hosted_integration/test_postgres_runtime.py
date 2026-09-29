@@ -57,7 +57,7 @@ async def test_real_postgres_queue_events_approval_and_rls(tmp_path, monkeypatch
         assert await duplicate.claim('task_execution','two') is None
         await queue.close()  # Abrupt process disconnect releases its advisory lock.
         async with engine.begin() as conn:
-            await conn.execute(text("SELECT pgmq.set_vt('task_execution',:id,0)"),{'id':delivery['receipt']})
+            await conn.execute(text("SELECT pgmq.set_vt('task_execution',CAST(:id AS bigint),0)"),{'id':delivery['receipt']})
         reclaimed = await duplicate.claim('task_execution','restarted')
         assert reclaimed['receipt'] == delivery['receipt']
         assert reclaimed['attempts'] == 2

@@ -17,14 +17,14 @@ class SupabaseQueueClient:
 
     async def send(self, name, payload):
         async with self.engine.begin() as conn:
-            return (await conn.execute(text('SELECT pgmq.send(:name, CAST(:payload AS jsonb))'),
+            return (await conn.execute(text('SELECT pgmq.send(CAST(:name AS text), CAST(:payload AS jsonb))'),
                                        {'name': name, 'payload': json.dumps(payload)})).scalar()
 
     async def claim(self, name, worker):
         conn = await self.engine.connect()
         retained = False
         try:
-            row = (await conn.execute(text('SELECT * FROM pgmq.read(:name, :seconds, 1)'),
+            row = (await conn.execute(text('SELECT * FROM pgmq.read(CAST(:name AS text), CAST(:seconds AS integer), 1)'),
                                       {'name': name, 'seconds': self.visibility_seconds})).mappings().first()
             if not row:
                 await conn.commit()
@@ -49,7 +49,7 @@ class SupabaseQueueClient:
             locked = (await conn.execute(text('SELECT pg_try_advisory_lock(hashtextextended(:key, 0))'),
                                          {'key': 'rlb-workspace-' + str(task['workspace_id'])})).scalar()
             if not locked:
-                await conn.execute(text('SELECT pgmq.set_vt(:name, :id, 5)'), {'name': name, 'id': receipt})
+                await conn.execute(text('SELECT pgmq.set_vt(CAST(:name AS text), CAST(:id AS bigint), 5)'), {'name': name, 'id': receipt})
                 await conn.commit()
                 return None
             attempts = (await conn.execute(text('''INSERT INTO queue_delivery_attempts (queue_name,receipt,attempts)
@@ -72,7 +72,7 @@ class SupabaseQueueClient:
 
     async def extend(self, name, receipt, visibility_timeout):
         conn, _ = self.claims[receipt]
-        result = (await conn.execute(text('SELECT * FROM pgmq.set_vt(:name, :id, :seconds)'),
+        result = (await conn.execute(text('SELECT * FROM pgmq.set_vt(CAST(:name AS text), CAST(:id AS bigint), CAST(:seconds AS integer))'),
                                     {'name': name, 'id': receipt, 'seconds': visibility_timeout})).first()
         await conn.commit()
         if result is None:
@@ -84,7 +84,7 @@ class SupabaseQueueClient:
             if archive:
                 await conn.execute(text('SELECT pgmq.archive(CAST(:name AS text), CAST(:id AS bigint))'), {'name': name, 'id': receipt})
             else:
-                await conn.execute(text('SELECT pgmq.set_vt(:name, :id, 5)'), {'name': name, 'id': receipt})
+                await conn.execute(text('SELECT pgmq.set_vt(CAST(:name AS text), CAST(:id AS bigint), 5)'), {'name': name, 'id': receipt})
             await conn.commit()
         finally:
             try:
