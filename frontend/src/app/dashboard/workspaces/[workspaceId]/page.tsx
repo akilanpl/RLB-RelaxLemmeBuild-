@@ -118,27 +118,36 @@ export default function WorkspaceIdePage() {
     if (isAuthenticated && workspaceId) void loadWorkspaceData();
   }, [isAuthenticated, workspaceId, loadWorkspaceData]);
 
+  const currentTaskId = task?.id;
   useEffect(() => {
-    if (!task || !isAuthenticated) return;
-    const active = ['ready', 'analyzing', 'staging_setup', 'promoting', 'planning', 'coding', 'test_planning', 'test_executing', 'reviewing', 'repairing'].includes(task.status);
-    if (!active) return;
-    const timer = window.setInterval(() => {
-      void (async () => {
-        try {
-          const latest = await apiClient.getTask(task.id, user?.id);
-          setTask(latest);
-          if (latest.status === 'plan_review' || latest.status === 'planning') {
-            const plans = await apiClient.listPlans(latest.id, user?.id);
-            const latestPlan = [...plans].sort((a, b) => (b.revision_number || 0) - (a.revision_number || 0))[0] ?? null;
-            if (latestPlan) setPlan(latestPlan);
-          }
-        } catch {
-          // Keep the last known task if a poll fails.
+    if (!currentTaskId || !isAuthenticated) return;
+    let active = true;
+    let cursor = 0;
+    let refreshedAt = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const events = await apiClient.getTaskEvents(currentTaskId, cursor).catch(() => null);
+        if (events?.length === 0 && Date.now() - refreshedAt < 15000) return;
+        const latest = await apiClient.getTask(currentTaskId, user?.id);
+        if (!active) return;
+        setTask(latest);
+        if (latest.status === 'plan_review' || latest.status === 'planning') {
+          const plans = await apiClient.listPlans(latest.id, user?.id);
+          if (!active) return;
+          setPlan([...plans].sort((a, b) => (b.revision_number || 0) - (a.revision_number || 0))[0] ?? null);
         }
-      })();
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [task, isAuthenticated, user?.id]);
+        if (events?.length) cursor = events[events.length - 1].sequence;
+        refreshedAt = Date.now();
+      } catch {
+        // Retry without advancing the event cursor or clearing recovered state.
+      } finally {
+        if (active) timer = setTimeout(() => void poll(), 3000);
+      }
+    };
+    void poll();
+    return () => { active = false; clearTimeout(timer); };
+  }, [currentTaskId, isAuthenticated, user?.id]);
 
   useEffect(() => {
     if (!isAuthenticated || !workspaceId) return;

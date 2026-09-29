@@ -1,71 +1,70 @@
-# Engineering verification — 2026-09-28
+# Engineering verification — 2026-09-29
 
-Scope: existing `/Users/akilan/Downloads/UEE`, branch `feat/engineering-complete`, based on PR #2 (`41dd45e`). No visual redesign. Existing root `.env` values were inspected for presence only and intentionally not used, per the owner's instruction. No cloud migration, deployment, AI request or Daytona call was made.
+Scope: existing `/Users/akilan/Downloads/UEE`, branch `feat/final-non-ui-completion`, based on merged PR #3 (`a37a36c`). No visual redesign. The owner explicitly authorized the existing non-production Supabase project and staging provider credentials. Production was not accessed or changed.
 
-## Runtime
+## IMPLEMENTED
 
-`backend/app/services/runtime.py` is the application composition root. API and worker entrypoints resolve it independently. Module-level compatibility references are lazy and allocate no adapters on import. Hosted startup validates configuration, hydrates provider configuration, and rejects a public artifact bucket. Hosted API cannot start an embedded worker; the Railway worker composes Daytona through the existing driver and SDK bridge.
+Existing architecture is preserved: independent API/worker composition, durable workflow/approval gates, provider/loadout abstraction, bounded retries/AI budgets, immutable promotion, Daytona sandbox driver, artifact retention and public GitHub/ZIP import.
 
-Local API uses an embedded worker, memory repositories/queue and local storage. Those repositories are deliberately not durable across process termination. A separate local worker cannot consume that queue. Deterministic tests inject fake providers/sandbox into real services; normal browser mode has no fake login or simulated successful AI execution.
+This pass adds:
 
-One transition policy lives in `workflow/states.py`. The browser/API path persists
-`analyzing`, `staging_setup`, and `promoting` as worker stages. Human code approval
-stores the selected proposal ID atomically with the transition to `promoting`;
-a fresh worker resumes promotion from that record. Staging copy and promotion no
-longer depend on the approval HTTP request staying alive. Existing synchronous
-service helpers retain composite transitions for legacy integrations/tests, but
-the browser path uses durable stages. Failed unpublished uploads can be removed
-safely; published versions are retained. Interrupted copies leave unreferenced objects eligible for the worker retention sweep.
+- Persisted running/terminal command evidence, bounded stdout/stderr callbacks through Daytona sessions, command IDs and idempotent evidence updates. Cancellation/disconnect cannot become a passing result. Project commands never execute on the API/worker host.
+- Migration 005: per-task event insertion locks prevent a browser cursor skipping an uncommitted earlier event. Database/evidence remains authoritative; browser polling resumes from persisted state and falls back to full refresh every 15 seconds.
+- Explicit PostgreSQL TLS CA configuration with hostname verification, connection/query deadlines and hidden SQL parameters.
+- Explicit pgmq parameter types fix acknowledgement ambiguity in staging and visibility-update ambiguity with pgmq 1.10 in CI.
+- Per-worker output-token ceilings applied to provider requests, including fallback workers.
+- Opt-in staging acceptance scripts and disposable real-PostgreSQL/pgmq integration/backup-restore CI coverage.
 
-## Local acceptance covered
+## LOCALLY VERIFIED
 
-- ZIP fixture import, repository analysis, planning, plan approval, staging-only coding, diff, code approval, immutable local promotion, generated tests, deliberate failure, bounded repair, second approval, retest, review and completion.
-- Worker reconstruction against retained test repositories; existing lease expiration, duplicate claim and post-persistence retry tests. These are deterministic service recovery checks, not live PostgreSQL or OS-crash certification.
-- 429/5xx/timeouts fall back; 400/401 do not. Each attempt reserves persisted task budget before the external call, with per-attempt identity, outcome, latency and token evidence.
-- Finite delivery retries, cancellation of an active stage, task admission limits, finite repair limits, and exhausted-budget rejection after service reconstruction.
-- Two-user HTTP/service checks for workspace/files/tasks/history/events/agent runs/tests/proposals/loadouts/credentials and approval/promotion mutations; JWT algorithm/issuer/audience/expiry tests in the existing suite.
-- Zero-exit timeout still fails verification and invokes sandbox cleanup. Missing configuration is unavailable, not passed. Command results are recorded individually, including sandbox/task/execution IDs, timestamps, command, exit code and bounded redacted logs.
-- Concurrent local promotion accepts one approval; previous canonical content remains intact. Cloud upload failure never enters its pointer transaction.
-- Hosted configuration fails closed before allocating local fallback adapters. Root `.env` is excluded from explicit test launches.
+167 backend tests passed (one expected duplicate-ZIP fixture warning), `pip check`, frontend lint/typecheck/production build and `git diff --check`. Local tests use `backend/.env.example`, excluding cloud credentials.
 
-## Checks
+Coverage includes deterministic import → analysis → planner → human plan approval → staging coding → diff → human code approval → immutable promotion → tests → deliberate failure → bounded repair → second approval → retest → reviewer → completion. Tests also cover cancellation, queue duplication/retry limits, concurrent approval/promotion, upload failure, invalid archives, tenant isolation, JWT issuer/audience/algorithm/expiry, transient 429/5xx/timeouts, non-transient auth failures and durable budget exhaustion.
 
-Final local backend suite: 161 tests. The expected duplicate-ZIP fixture warning remains. Frontend lint, type checking and production build are required alongside the suite.
-
-Run from repository root:
+New regressions cover command cancellation evidence, bounded separate streams, cleanup after stream failure, command-result idempotency, worker token limits and verified TLS. Daytona SDK session behavior is tested with an injected SDK double; it is not live Daytona certification.
 
 ```sh
 RLB_ENV_FILE=backend/.env.example backend/.venv/bin/python -m pytest backend/tests -q
 backend/.venv/bin/python -m pip check
 git diff --check
-```
-
-Run in `frontend`:
-
-```sh
+cd frontend
 npm run lint
 npm run typecheck
 NEXT_PUBLIC_SUPABASE_URL= NEXT_PUBLIC_SUPABASE_ANON_KEY= NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY= npm run build
 ```
 
-Process smoke: `python -m backend.local` serves `/health`, `/ready` and API documentation. With no provider configured, the embedded worker processes an imported fixture through analyzing/planning then fails explicitly; a second user receives HTTP 403. Standalone `backend.worker` rejects memory mode as intended.
+The `postgres-runtime` CI job uses a disposable PostgreSQL server with the real pgmq extension. It applies bootstrap/migrations and verifies claim/heartbeat/duplicate fencing/reclaim/ack, concurrent approvals, command SQL/event ordering and RLS, followed by a dump/restore rehearsal. The separate retention integration job validates deletion/publication transactions. These jobs do not stand in for managed cloud or browser acceptance.
 
-## Future staging acceptance — not run
+## STAGING VERIFIED
 
-The owner intentionally excluded the available Supabase/Daytona accounts. `DAYTONA_SANDBOX_IMAGE` remains unspecified. Supabase migrations have not been applied. Local PostgreSQL initialization is blocked by shared-memory permissions; the dedicated CI job tests migration 004 and retention queries against disposable PostgreSQL. Supabase Auth signup/refresh/RLS permissions, real pgmq locking/recovery, transaction commit failure, private Storage behavior, Daytona limits/orphan deletion, real provider requests, and browser reconnect during a hosted task require a separately authorized staging pass.
+Through a local HTTP API backed by the authorized real staging services:
 
-Apply migrations 001 through 004 in order (bootstrap schema first only for a new empty database). Configure the private bucket, isolated test accounts, model loadouts, and trusted Daytona image. Validate Supabase Auth rate limits/CAPTCHA/email policy. `/ready` is actionable infrastructure readiness, not proof that every user's provider account can execute or that Daytona has completed a command.
+- Supabase migrations 001–005 applied; private `workspace-artifacts` bucket created. Existing `workspace-files` bucket and existing user workspaces were preserved.
+- Two disposable admin-confirmed users: actual password login, refresh, JWT-authenticated API access, logout and persisted task/session access across an API process restart.
+- ZIP import into private Storage and durable task/workspace records.
+- Cross-user denial for workspaces/files/content/analysis, tasks/events/history/runs/plans/test plans/executions/proposals/permissions and approval mutation. Direct REST RLS denial/isolation for workspaces/tasks/events/files/runs/test executions/proposals/loadouts/credentials; private artifact denial for the foreign user.
+- Readiness correctly reported database/queue/storage ready and HTTP 503 with a stale worker heartbeat; no missing worker was presented as healthy.
+- Actual pgmq: enqueue, claim, heartbeat/visibility extension, duplicate workspace fencing, disconnected-client lease reclaim and acknowledgement. This is live queue-client recovery, not a Railway worker crash test.
+- Actual PostgreSQL: command-result upsert and running/success events; concurrent entity event insertion blocks until the earlier task event commits.
+- Actual private Storage/retention: canonical protection, orphan discovery/deletion, restart idempotence, preserved canonical bytes and rejection of publication into a retired prefix. The disposable fixture used zero-day expiry; production defaults remain seven days.
+- Real Gemini `gemini-3.1-flash-lite` planner, coder and Test Architect passed through persisted disposable worker/loadout configuration and the existing encrypted credential. Concurrent plan approval allowed one winner; code approval and immutable promotion passed against actual PostgreSQL/Storage. Provider attempt/token accounting was verified. Existing display-label worker configurations were preserved; they require valid API IDs before normal use. Earlier invalid-label/unsupported-model/transient provider attempts failed explicitly without false success.
 
-## Engineering completion additions
+Disposable users/workspaces/objects were removed. Safe summaries were written locally to `/tmp/rlb-staging-acceptance-report.json`, `/tmp/rlb-retention-acceptance-report.json` and `/tmp/rlb-provider-acceptance-report.json`. No keys or generated private project content are included in these reports.
 
-IMPLEMENTED / LOCALLY VERIFIED: restart-safe artifact deletion ledger, bounded hourly worker cleanup, immutable import publication, import concurrency fencing, bounded upload reads, GitHub public branch archive import, safe API error responses, workflow stage deadlines, sandbox cleanup deadlines, terminal failure persistence, and retry accounting that excludes queue lock contention. Approval waits reset local delivery budgets. Task-linked discarded staging stays available as audit bytes.
+## PRODUCTION VERIFIED
 
-Cleanup defaults to seven days, 20 prefixes and 100 objects per prefix per pass, with a 120-second pass deadline. It uses the Storage API for deletion, never SQL deletion from `storage.objects`. Workspace locks exclude active workers/imports. Canonical, active-task, published and task-linked audit trees are retained indefinitely. Tombstones prevent a retired prefix from being published later; failed deletions retry after restart. Scan timestamps prevent protected roots starving later candidates. Legacy snapshots with incomplete provenance are conservatively retained.
+None. No production migrations, configuration, deployments or data operations were performed. RLB is **not certified production-ready**.
 
-Public import accepts only `https://github.com/owner/repo` and an explicit branch (default `main`). Downloads use the fixed codeload host, no credentials/proxies/redirects, size/time bounds, and existing ZIP/path validation. Private repositories, submodules and other Git hosts are explicitly unsupported. This is a snapshot import, not ongoing Git synchronization. The existing form now calls the import endpoint and reports failures instead of treating Git selection as a successful empty project.
+## NOT VERIFIED / external gates
 
-STAGING VERIFIED: none. NOT VERIFIED: live Supabase/Auth/pgmq/Storage, Daytona, external providers, Railway and Vercel. The PostgreSQL CI job is an isolated retention/migration contract test, not a substitute for those checks.
+- `DAYTONA_SANDBOX_IMAGE` is absent from available staging configuration. No image was invented and no Daytona API call was made. Live execution, network restrictions, cleanup/auto-delete, timeout/cancellation and sandbox crash behavior remain unverified.
+- No Railway/Vercel project link, CLI login or deployment token was available. Internet-facing API/worker/frontend deployment, exact hosted CORS/redirects and browser refresh/reconnect during a running cloud task remain unverified.
+- Public signup requires email confirmation. Admin-provisioned disposable accounts do not verify delivery/confirmation, signup abuse controls or a full browser login journey.
+- Real repair/reviewer-after-test acceptance and the complete hosted golden workflow remain open: no test evidence was fabricated to bypass the missing Daytona image.
+- Managed Supabase backup/PITR and Storage-byte restoration have not been exercised. The installed local pg_dump 15 client cannot dump staging PostgreSQL 17. A mode-0600 public-data/function/policy snapshot was saved before migrations; it is explicitly **not** a full disaster-recovery backup. See [operations](OPERATIONS.md).
 
-KNOWN LIMITATIONS: command output is delivered after each command; local state is memory-only; authenticated browser acceptance needs authorized staging credentials. Audit artifacts deliberately have no automatic deletion policy. Legacy ambiguous roots require explicit future audit/retention decisions. No UI redesign was performed.
+## KNOWN LIMITATIONS
 
-This pass is locally verified engineering hardening. It is not a claim of hosted or production acceptance.
+Local mode uses memory state and an embedded worker; restarting it loses workflow state, and a separate process cannot consume its queue. There is no fake browser login or fake passing AI/sandbox workflow. Private GitHub imports, submodules, other Git hosts and ongoing Git synchronization remain explicitly unsupported; secure private access needs a separately designed tenant credential flow.
+
+Published/task-linked audit artifacts and ambiguous legacy roots are conservatively retained; audit deletion policy is owner-controlled. Abrupt worker death can leave a running command record; recovery creates a new attempt and never infers success. At-least-once delivery can repeat an interrupted provider call, subject to persisted budget. External staging gates above still require completion before a production readiness decision.

@@ -202,7 +202,8 @@ class RuntimeResolver:
                 raise LookupError("Provider adapter is not registered")
             candidates.append(({'worker_id': selected_worker.id, 'provider_id': selected_worker.provider_id,
                                 'model_name': selected_worker.model_name},
-                ProviderGateway(adapter_type(self.credential_service), credential, selected_worker.model_name)))
+                ProviderGateway(adapter_type(self.credential_service), credential, selected_worker.model_name,
+                                min(self.max_output_tokens, selected_worker.max_output_tokens))))
         async def reserve():
             await self.workflow.reserve_ai_call(task_id, user_id)
         async def record(evidence):

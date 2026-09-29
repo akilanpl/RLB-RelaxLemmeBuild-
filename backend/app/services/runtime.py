@@ -44,6 +44,9 @@ class Runtime:
             from sqlalchemy import text
             from backend.app.db.session import get_engine
             async with get_engine().connect() as connection:
+                version = (await connection.execute(text('SELECT version FROM rlb_schema_versions WHERE version=5'))).scalar()
+                if version != 5:
+                    raise RuntimeError('Hosted migration 005 is required.')
                 await connection.execute(text('SELECT root_path FROM artifact_cleanup LIMIT 0'))
                 await connection.execute(text('SELECT root_path FROM artifact_audit_roots LIMIT 0'))
                 await connection.execute(text('SELECT attempts FROM queue_delivery_attempts LIMIT 0'))

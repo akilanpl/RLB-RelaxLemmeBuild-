@@ -451,6 +451,10 @@ class ApiClient {
     );
   }
 
+  async getTaskEvents(taskId: string, after = 0): Promise<Array<{ sequence: number; event_type: string }>> {
+    return this.request(`/api/v1/tasks/${taskId}/events?after=${after}`);
+  }
+
   async importWorkspaceRepository(workspaceId: string, url: string, branch: string): Promise<Workspace> {
     const workspace = normalizeWorkspace(await this.request<unknown>(
       `/api/v1/workspaces/${workspaceId}/import/repository`, {

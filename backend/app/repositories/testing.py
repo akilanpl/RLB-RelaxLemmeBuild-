@@ -15,6 +15,7 @@ class TestingRepository(Protocol):
     async def get_plan(self, plan_id: UUID) -> Optional[TestPlan]: ...
     async def list_plans(self, task_id: UUID) -> List[TestPlan]: ...
     async def add_execution(self, execution: TestExecution) -> TestExecution: ...
+    async def add_command_result(self, execution_id: UUID, evidence: dict): ...
     async def add_build_result(self, result: BuildResult) -> BuildResult: ...
     async def list_executions(self, task_id: UUID) -> List[TestExecution]: ...
 
@@ -42,7 +43,8 @@ class InMemoryTestingRepository:
     async def add_command_result(self, execution_id, evidence):
         execution = self.executions[execution_id]
         self.executions[execution_id] = execution.model_copy(update={
-            'command_results': [*execution.command_results, evidence]})
+            'command_results': [item for item in execution.command_results
+                if not evidence.get('command_id') or item.get('command_id') != evidence['command_id']] + [evidence]})
 
     async def add_build_result(self, result):
         execution = self.executions[result.test_execution_id]
@@ -114,8 +116,11 @@ class PostgresTestingRepository:
     async def add_command_result(self, execution_id, evidence):
         async with self.sessionmaker.begin() as session:
             await session.execute(text("""UPDATE test_executions SET command_results =
-                command_results || CAST(:evidence AS jsonb) WHERE id=:id"""),
-                {'id': execution_id, 'evidence': json.dumps([evidence])})
+                coalesce((SELECT jsonb_agg(item ORDER BY ordinal) FROM jsonb_array_elements(command_results)
+                    WITH ORDINALITY AS entries(item,ordinal)
+                    WHERE CAST(:command_id AS text) IS NULL OR item->>'command_id' IS DISTINCT FROM CAST(:command_id AS text)), '[]'::jsonb)
+                || CAST(:evidence AS jsonb) WHERE id=:id"""),
+                {'id': execution_id, 'command_id': evidence.get('command_id'), 'evidence': json.dumps([evidence])})
 
     async def add_build_result(self, result):
         async with self.sessionmaker() as session:
