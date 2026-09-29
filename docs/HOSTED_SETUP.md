@@ -1,10 +1,10 @@
 # RLB hosting and account checklist
 
-Implementation is in the existing UEE repository. No cloud projects have been created or deployed by this work. Offline tests exercise the real application services with fake external providers; they do not certify Supabase or Daytona connectivity.
+Implementation is in the existing UEE repository. The authorized non-production Supabase project has been exercised with live Auth/Postgres/Queue/Storage requests. Railway/Vercel deployment and Daytona execution remain blocked; see [verification evidence](ENGINEERING_VERIFICATION.md). No production changes were made.
 
 ## Accounts and projects to create or confirm
 
-- [ ] Supabase **staging** project, distinct from production. Its existence is not yet confirmed.
+- [x] Supabase **staging** project, explicitly authorized by its owner. Migrations 001–005 applied; private `workspace-artifacts` bucket created.
 - [ ] Supabase **production** project. Never use its credentials in local development or tests.
 - [ ] Daytona account, API key, available capacity, and a trusted sandbox image with the Node/Python/build tools supported by your workspaces. Account availability is not yet confirmed.
 - [ ] Vercel project connected to this repository, with Root Directory `frontend`. Assign staging/preview and production environment variables separately.
@@ -13,7 +13,7 @@ Implementation is in the existing UEE repository. No cloud projects have been cr
 
 ## Supabase setup
 
-1. For a **new empty** project, apply `schema/supabase_schema.sql`, then `schema/migrations/001_supabase_queue.sql` and `schema/migrations/002_runtime_status_and_rls.sql`. Commit each script separately. For an existing installation matching the prior RLB schema, back up first and apply only the two additive migrations; do not replay the bootstrap schema over existing data. Inspect schema drift before applying migrations.
+1. For a **new empty** project, apply `schema/supabase_schema.sql`, then every numbered migration in `schema/migrations/` in ascending order (001–005). Commit each script separately. For an existing installation matching the prior RLB schema, back up first and apply only the unapplied additive migrations; do not replay the bootstrap schema over existing data. Inspect schema drift before applying migrations.
 2. Enable Supabase Queues/pgmq. Migration 001 creates `task_execution` and transactional task-state triggers. Queue messages carry task identifiers, not credentials or source archives. Keep pgmq access server-only; browser clients must not have queue privileges.
 3. Create a **private** Storage bucket named `workspace-artifacts`. API and worker use a server service-role key; do not make the bucket public.
 4. Obtain the PostgreSQL direct connection or **session pooler** URL on port 5432. Transaction pooling on port 6543 is incompatible with the worker's session advisory locks and is rejected at startup. The database role must be trusted for server-side access.
@@ -95,7 +95,7 @@ These checks inspect exported variable presence and print **names only**. They d
 - [ ] Confirm failed tests display failures, sandbox timeouts fail, missing configuration never appears as a passing test, and network limits apply in real Daytona.
 - [ ] Verify private Storage, database role privileges, platform logs, limits, costs, and backup/restore procedures.
 
-Known operational limits: real PostgreSQL/pgmq transactions, cloud promotion SQL, Supabase Storage and Daytona have not been exercised against a live account here. A local PostgreSQL startup was blocked by the execution environment's shared-memory restriction. Sandbox output is collected per completed command, not streamed live. Failed uploads can leave unreferenced snapshot objects; migration 004 adds bounded worker retention for eligible unreferenced artifacts. Local in-memory mode loses workflow data when restarted. The full authenticated browser journey requires test Supabase and provider configuration.
+Known operational limits: local state is memory-only; a separate local worker cannot consume it. Hosted execution still requires a trusted Daytona image and configured provider API model IDs. Private GitHub import and ongoing Git synchronization are unsupported. Published/audit artifacts are deliberately retained indefinitely.
 
 ## Provider references
 
@@ -116,7 +116,6 @@ Additional non-secret controls: `MAX_REPAIR_ATTEMPTS=3` and `MAX_TASKS_PER_USER_
 
 Daytona sandboxes are deleted after normal execution/cancellation; the SDK request also sets auto-stop at 15 minutes and auto-delete at 60 minutes to bound orphan retention after a process crash. Those settings require live Daytona validation. No image is invented or provided by this repository.
 
-For this pass the existing root `.env` accounts were explicitly left unused, even though Supabase is known non-production. No cloud migrations, smoke-test users, deployments, external AI calls, or Daytona executions were performed. Configure the image and authorize a later staging acceptance pass before deploying migrations 003/004 and the new application together.
 
 
 ## Engineering completion: migration 004
@@ -128,3 +127,36 @@ The Railway worker runs retention independently of its consumer: `ARTIFACT_RETEN
 `MAX_WORKFLOW_STAGE_SECONDS=1800` bounds each active stage (maximum accepted configuration 7200); approval waiting consumes no execution deadline. Delivery recovery is bounded to three actual fenced claims per message. Sandbox deletion calls time out after 30 seconds; provider-side auto-stop/delete remains the crash cleanup backstop and requires live verification.
 
 No new secret is needed. Public GitHub import requires API egress to `codeload.github.com:443`; redirects, arbitrary hosts, authentication and submodules are not supported. No Git subprocess or imported code runs on the API host. Staging validation must confirm real Storage metadata/listing, deletion/retry, publication fencing, and queue recovery with two workers.
+
+
+## Migration 005, TLS and event delivery
+
+Apply `schema/migrations/005_event_delivery.sql` before deploying this revision. Startup/readiness require version 5. It serializes event insertion per task so a polling cursor cannot skip an uncommitted lower sequence. Command evidence is upserted from running through terminal status; browser polling reads persisted events and authoritative evidence, with a 15-second full-refresh fallback. Logs are bounded/redacted; abrupt process death may leave a running record until task recovery creates a new attempt. Events do not prove command success.
+
+If the PostgreSQL endpoint uses a private CA, configure `DATABASE_SSL_CA_FILE` (mounted public certificate path) **or** `DATABASE_SSL_CA_PEM` (public PEM text) in both Railway services. Obtain the certificate from that project's Supabase Connect/SSL instructions; verify its provenance. These values are not secrets. Hostname and chain verification remain mandatory; do not set `CERT_NONE` or disable SSL. See [Supabase SSL enforcement](https://supabase.com/docs/guides/platform/ssl-enforcement).
+
+Provider worker `model_name` must be an exact API model ID, not a display name such as `Gemini 2.5`. The existing staging settings are preserved. Model availability is account-dependent: validate the selected ID before assigning all four roles. Repair uses the coder mapping and the same durable budget.
+
+## Explicit staging acceptance commands
+
+These opt-in scripts create disposable data, use real external services and clean up their own records. Use **only** the authorized staging configuration. They are excluded from the default automated suite. Secrets stay in the local configuration or platform store; never print/export them through shell tracing.
+
+```sh
+ENVIRONMENT=staging DEBUG=false RUN_EMBEDDED_WORKER=false PORT=8001 \
+  backend/.venv/bin/python -m backend.serve
+```
+
+In a second terminal (set the CA variable if required):
+
+```sh
+ENVIRONMENT=staging DEBUG=false RLB_STAGING_APPROVED=1 \
+  backend/.venv/bin/python -m scripts.staging_acceptance
+# Explicit non-secret model ID required; uses existing encrypted Gemini credential.
+ENVIRONMENT=staging DEBUG=false RUN_EMBEDDED_WORKER=false RLB_STAGING_APPROVED=1 \
+  RLB_STAGING_MODEL=gemini-3.1-flash-lite \
+  backend/.venv/bin/python -m scripts.staging_provider_acceptance
+```
+
+`RLB_STAGING_API_URL` defaults to `http://127.0.0.1:8001`; set the authorized Railway staging origin after deployment. The auth script currently reads staging public client settings from `frontend/.env.local` and checks project consistency. Admin-confirmed disposable accounts do not verify the public email-signup journey. The provider script stops before sandbox execution; it does not substitute fake tests for Daytona. Neither command certifies production readiness.
+
+See [operations and recovery](OPERATIONS.md) for backups, restoration, alerting and encryption-key handling.

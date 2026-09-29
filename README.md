@@ -266,13 +266,13 @@ the workflow state machine, provider abstraction, loadouts, persistence, test
 orchestration, the frontend workspace experience, durable worker execution,
 and the security boundaries described above.
 
-**Locally verified, pending hosted acceptance:** the Daytona SDK adapter,
-Supabase queue/storage composition, encrypted provider runtime and transient
-fallback are implemented. Local acceptance uses deterministic doubles; project
-commands never execute on the API host. The existing cloud accounts were
-intentionally unused in this engineering pass. Real Auth/RLS, queue recovery,
-transactional promotion and Daytona execution still require staging validation.
-Git URL import remains a note-only UI option; use ZIP import for the working flow.
+**Implemented and partially staging-verified:** durable workflow, Supabase Auth/RLS,
+private Storage, pgmq recovery and artifact retention have live staging evidence.
+Command lifecycle/output persistence and reconnect polling are implemented.
+Project commands execute only through the sandbox abstraction; real Daytona and
+internet-facing Railway/Vercel acceptance remain blocked by external setup.
+ZIP and public GitHub branch snapshot imports work; private repositories are unsupported.
+No production deployment or production-readiness claim is made.
 
 See [local commands](docs/LOCAL_DEVELOPMENT.md), [hosted setup](docs/HOSTED_SETUP.md),
 and [engineering verification](docs/ENGINEERING_VERIFICATION.md).
@@ -338,4 +338,4 @@ That's the whole idea. Everything else is implementation detail.
 
 </div>
 
-Engineering completion adds safe public GitHub branch import, bounded worker artifact retention, import publication fencing, and stage/recovery limits. Apply hosted migrations through `004_artifact_retention.sql`; see [verification status](docs/ENGINEERING_VERIFICATION.md) and [hosted setup](docs/HOSTED_SETUP.md). Cloud accounts remain intentionally unused pending authorized staging acceptance.
+Engineering completion adds safe public GitHub branch import, bounded worker artifact retention, import publication fencing, and stage/recovery limits. Apply hosted migrations through `005_event_delivery.sql`; see [verification status](docs/ENGINEERING_VERIFICATION.md) and [hosted setup](docs/HOSTED_SETUP.md). Staging Supabase was explicitly authorized and tested; see the documented external gates before deployment.
