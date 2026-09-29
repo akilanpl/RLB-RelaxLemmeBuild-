@@ -38,6 +38,12 @@ class DaytonaSandboxDriver(BaseSandboxDriver):
             timed_out=getattr(result, "timed_out", False),
         )
 
+    async def execute_command_observed(self, sandbox_id, command, on_output):
+        result = await self.client.execute_observed(
+            sandbox_id, command.cmd, cwd=command.cwd or '/workspace',
+            env=command.env, timeout=command.timeout_seconds, on_output=on_output)
+        return SandboxExecutionResult(**vars(result))
+
     async def stream_command_output(self, sandbox_id: str,
                                     command: SandboxCommand) -> AsyncIterator[str]:
         async for line in self.client.stream(

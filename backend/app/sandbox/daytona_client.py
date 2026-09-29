@@ -71,6 +71,54 @@ class DaytonaRuntimeClient:
             return SimpleNamespace(exit_code=-1, stdout='', stderr='Sandbox command timed out.',
                 duration_ms=int((monotonic() - started) * 1000), timed_out=True)
 
+    async def execute_observed(self, sandbox_id, command, cwd, env, timeout, on_output):
+        """One async session command; stdout/stderr callbacks never re-execute it."""
+        from daytona import SessionExecuteRequest
+        from uuid import uuid4
+        import shlex
+        from contextlib import suppress
+        process = self.sandboxes[sandbox_id].process
+        cwd = posixpath.normpath(posixpath.join('/workspace', cwd or ''))
+        if cwd != '/workspace' and not cwd.startswith('/workspace/'):
+            raise ValueError('Command working directory must stay inside /workspace.')
+        session_id = str(uuid4())
+        started = monotonic()
+        output = {'stdout': '', 'stderr': ''}
+        async def receive(stream, chunk):
+            # Cap retained evidence even when the project emits unlimited output.
+            output[stream] = (output[stream] + chunk[:64000])[:64000]
+            await on_output(stream, chunk[:64000])
+        logs = None
+        try:
+            async with asyncio.timeout((timeout or 600) + 5):
+                await process.create_session(session_id)
+                assignments = ' '.join(shlex.quote(f'{key}={value}') for key, value in env.items())
+                shell = f'cd {shlex.quote(cwd)} && env {assignments} sh -c {shlex.quote(command)}'
+                execution = await process.execute_session_command(session_id,
+                    SessionExecuteRequest(command=shell, run_async=True))
+                logs = asyncio.create_task(process.get_session_command_logs_async(
+                    session_id, execution.cmd_id,
+                    lambda chunk: receive('stdout', chunk), lambda chunk: receive('stderr', chunk)))
+                while True:
+                    if logs.done():
+                        await logs  # Stream errors must not become a false pass.
+                    status = await process.get_session_command(session_id, execution.cmd_id)
+                    if status.exit_code is not None:
+                        await logs
+                        return SimpleNamespace(exit_code=status.exit_code, **output,
+                            duration_ms=int((monotonic()-started)*1000), timed_out=False)
+                    await asyncio.sleep(.25)
+        except TimeoutError:
+            return SimpleNamespace(exit_code=-1, **output,
+                duration_ms=int((monotonic()-started)*1000), timed_out=True)
+        finally:
+            if logs is not None:
+                logs.cancel()
+                await asyncio.gather(logs, return_exceptions=True)
+            # Destroying the sandbox remains the outer executor's final backstop.
+            with suppress(Exception):
+                await asyncio.wait_for(process.delete_session(session_id), timeout=10)
+
     async def stream(self, sandbox_id, command, **kwargs):
         result = await self.execute(sandbox_id, command, **kwargs)
         for line in result.stdout.splitlines(keepends=True):

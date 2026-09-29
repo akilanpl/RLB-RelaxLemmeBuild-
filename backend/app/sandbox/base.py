@@ -31,6 +31,13 @@ class BaseSandboxDriver(ABC):
         """Run an isolated command within the sandbox."""
         pass
 
+    async def execute_command_observed(self, sandbox_id, command, on_output):
+        """Compatibility path; drivers with live output override this method."""
+        result = await self.execute_command(sandbox_id, command)
+        await on_output('stdout', result.stdout)
+        await on_output('stderr', result.stderr)
+        return result
+
     @abstractmethod
     async def stream_command_output(
         self, 

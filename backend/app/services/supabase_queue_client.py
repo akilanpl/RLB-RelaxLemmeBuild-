@@ -36,13 +36,13 @@ class SupabaseQueueClient:
                     payload = json.loads(payload)
                 task_id = UUID(payload['task_id'])
             except (KeyError, ValueError, TypeError):
-                await conn.execute(text('SELECT pgmq.archive(:name, :id)'), {'name': name, 'id': receipt})
+                await conn.execute(text('SELECT pgmq.archive(CAST(:name AS text), CAST(:id AS bigint))'), {'name': name, 'id': receipt})
                 await conn.commit()
                 return None
             task = (await conn.execute(text('SELECT user_id, workspace_id FROM tasks WHERE id=:id'),
                                        {'id': task_id})).mappings().first()
             if not task:
-                await conn.execute(text('SELECT pgmq.archive(:name, :id)'), {'name': name, 'id': receipt})
+                await conn.execute(text('SELECT pgmq.archive(CAST(:name AS text), CAST(:id AS bigint))'), {'name': name, 'id': receipt})
                 await conn.commit()
                 return None
             # A workspace cannot be promoted by one task while another codes it.
@@ -82,7 +82,7 @@ class SupabaseQueueClient:
         conn, _ = self.claims.pop(receipt)
         try:
             if archive:
-                await conn.execute(text('SELECT pgmq.archive(:name, :id)'), {'name': name, 'id': receipt})
+                await conn.execute(text('SELECT pgmq.archive(CAST(:name AS text), CAST(:id AS bigint))'), {'name': name, 'id': receipt})
             else:
                 await conn.execute(text('SELECT pgmq.set_vt(:name, :id, 5)'), {'name': name, 'id': receipt})
             await conn.commit()

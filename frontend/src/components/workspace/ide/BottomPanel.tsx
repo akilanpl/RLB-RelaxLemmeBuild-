@@ -35,9 +35,16 @@ export function BottomPanel({
     setTerminalLines([]);
     setTerminalError(undefined);
     if (!taskId || tab !== 'terminal' || collapsed) return;
+    let cursor = 0;
+    let refreshedAt = 0;
     const load = async () => {
       try {
+        // Persisted events are hints; evidence remains authoritative after reconnect.
+        const events = await apiClient.getTaskEvents(taskId, cursor).catch(() => null);
+        if (events?.length === 0 && Date.now() - refreshedAt < 15000) return;
         const executions = await apiClient.getTestExecutions(taskId, userId);
+        refreshedAt = Date.now();
+        if (events?.length) cursor = events[events.length - 1].sequence;
         const latest = executions[executions.length - 1];
         if (active) {
           setTerminalLines(latest?.command_results?.length ? latest.command_results.flatMap((result) => [
@@ -92,7 +99,7 @@ export function BottomPanel({
           {tab === 'terminal' && (
             <div className="space-y-1">
               {terminalError && <p className="text-coral">{terminalError}</p>}
-              {terminalLines.length ? terminalLines.map((line, index) => <pre key={index} className="whitespace-pre-wrap break-words">{line}</pre>) : <p className="text-cream/35">No sandbox output yet. Command results appear after execution.</p>}
+              {terminalLines.length ? terminalLines.map((line, index) => <pre key={index} className="whitespace-pre-wrap break-words">{line}</pre>) : <p className="text-cream/35">No sandbox output yet. Running command output refreshes automatically.</p>}
             </div>
           )}
           {tab === 'problems' && (

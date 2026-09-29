@@ -37,6 +37,8 @@ class Settings(BaseSettings):
         default=None,
         description="PostgreSQL / Supabase connection string (e.g. postgresql+asyncpg://user:pass@host:5432/db)",
     )
+    DATABASE_SSL_CA_FILE: Optional[str] = None
+    DATABASE_SSL_CA_PEM: Optional[str] = None
     SUPABASE_URL: Optional[str] = Field(
         default=None,
         description="Supabase API project URL",

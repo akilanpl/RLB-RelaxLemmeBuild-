@@ -59,10 +59,11 @@ class QuotaGuardedGateway(AIGateway):
 class ProviderGateway(AIGateway):
     """Adapts a resolved worker/provider pair to the agent gateway contract."""
 
-    def __init__(self, adapter, credentials, model: str):
+    def __init__(self, adapter, credentials, model: str, max_output_tokens: int | None = None):
         self.adapter = adapter
         self.credentials = credentials
         self.model = model
+        self.max_output_tokens = max_output_tokens
 
     def validate_configuration(self) -> None:
         if not self.model:
@@ -83,7 +84,7 @@ class ProviderGateway(AIGateway):
                         ChatMessage(role="user", content=request.user_prompt),
                     ],
                     temperature=request.temperature,
-                    max_tokens=request.max_tokens,
+                    max_tokens=min(request.max_tokens or self.max_output_tokens, self.max_output_tokens) if self.max_output_tokens else request.max_tokens,
                 ),
                 self.credentials,
             )
@@ -115,6 +116,8 @@ class ProviderGateway(AIGateway):
                 raise AIGatewayError("Provider returned a malformed response.") from exc
             if isinstance(exc, httpx.TransportError):
                 raise TransientProviderError("Provider transport unavailable.") from exc
+            if isinstance(exc, httpx.HTTPStatusError):
+                raise AIGatewayError(f"Provider rejected the request (HTTP {exc.response.status_code}).") from exc
             if isinstance(exc, httpx.HTTPError):
                 raise AIGatewayError("Provider request failed.") from exc
             raise AIGatewayError("Provider request failed.") from exc

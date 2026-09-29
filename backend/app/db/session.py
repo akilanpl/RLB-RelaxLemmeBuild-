@@ -40,18 +40,23 @@ def get_engine() -> Optional[AsyncEngine]:
 
         parsed = urlparse(db_url)
         hostname = (parsed.hostname or "").lower()
-        connect_args: dict = {}
-        if hostname.endswith((".supabase.com", ".supabase.co")) or "pooler.supabase" in hostname:
+        connect_args: dict = {"timeout": 10, "command_timeout": 30}
+        if settings.ENVIRONMENT in {"staging", "production"} or hostname.endswith((".supabase.com", ".supabase.co")) or "pooler.supabase" in hostname:
             try:
                 import certifi
                 ssl_context = ssl.create_default_context(cafile=certifi.where())
             except Exception:
                 ssl_context = ssl.create_default_context()
+            if settings.DATABASE_SSL_CA_FILE:
+                ssl_context.load_verify_locations(cafile=settings.DATABASE_SSL_CA_FILE)
+            if settings.DATABASE_SSL_CA_PEM:
+                ssl_context.load_verify_locations(cadata=settings.DATABASE_SSL_CA_PEM)
             connect_args["ssl"] = ssl_context
 
         _engine = create_async_engine(
             db_url,
             echo=False,
+            hide_parameters=True,
             future=True,
             pool_pre_ping=True,
             connect_args=connect_args,

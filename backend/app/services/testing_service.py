@@ -227,19 +227,45 @@ class TestExecutorService:
 
     async def _execute_command(self, sandbox_id, command):
         from backend.app.analysis.sanitizer import redact_secrets
+        import asyncio
         started = _now()
-        result = await self.sandbox.execute_command(sandbox_id, command)
-        result = result.model_copy(update={'stdout': redact_secrets(result.stdout)[:64000],
-                                          'stderr': redact_secrets(result.stderr)[:64000]})
-        evidence = {'execution_id': str(self._execution_id), 'task_id': str(self._task_id),
-                    'sandbox_id': sandbox_id, 'command': redact_secrets(command.cmd),
-                    'status': 'timeout' if result.timed_out else 'success' if result.exit_code == 0 else 'failed',
-                    'exit_code': result.exit_code, 'stdout': result.stdout, 'stderr': result.stderr,
-                    'duration_ms': result.duration_ms, 'started_at': started.isoformat(),
-                    'completed_at': _now().isoformat()}
-        self._commands.append(evidence)
+        began = monotonic()
+        last_flush = began
+        output = {'stdout': '', 'stderr': ''}
+        evidence = {'command_id': str(uuid4()), 'execution_id': str(self._execution_id),
+                    'task_id': str(self._task_id), 'sandbox_id': sandbox_id,
+                    'command': redact_secrets(command.cmd)[:16000], 'status': 'running',
+                    'exit_code': None, 'stdout': '', 'stderr': '', 'duration_ms': 0,
+                    'started_at': started.isoformat(), 'completed_at': None}
         await self.repository.add_command_result(self._execution_id, evidence)
-        return result
+        async def receive(stream, chunk):
+            nonlocal last_flush
+            if stream not in output:
+                return
+            output[stream] = (output[stream] + chunk[:64000])[:64000]
+            if monotonic() - last_flush >= 1:
+                # Incomplete lines wait for completion so split secrets aren't emitted.
+                for key, value in output.items():
+                    evidence[key] = redact_secrets(value.rsplit('\n', 1)[0] if '\n' in value else '')[:64000]
+                evidence['duration_ms'] = int((monotonic()-began)*1000)
+                await self.repository.add_command_result(self._execution_id, dict(evidence))
+                last_flush = monotonic()
+        try:
+            result = await self.sandbox.execute_command_observed(sandbox_id, command, receive)
+            result = result.model_copy(update={'stdout': redact_secrets(result.stdout)[:64000],
+                                              'stderr': redact_secrets(result.stderr)[:64000]})
+            evidence.update(status='timeout' if result.timed_out else 'success' if result.exit_code == 0 else 'failed',
+                exit_code=result.exit_code, stdout=result.stdout, stderr=result.stderr, duration_ms=result.duration_ms)
+            return result
+        except BaseException as exc:
+            evidence.update(status='cancelled' if isinstance(exc, asyncio.CancelledError) else 'unavailable',
+                stdout=redact_secrets(output['stdout'])[:64000], stderr=redact_secrets(output['stderr'])[:64000],
+                duration_ms=int((monotonic()-began)*1000))
+            raise
+        finally:
+            evidence['completed_at'] = _now().isoformat()
+            self._commands.append(dict(evidence))
+            await self.repository.add_command_result(self._execution_id, evidence)
 
     async def _run_check(self, sandbox_id: str, execution_id: UUID,
                          check: BaselineCheckType) -> BuildResult:

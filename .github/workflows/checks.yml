@@ -56,3 +56,35 @@ jobs:
         env:
           RLB_ENV_FILE: backend/.env.example
           RLB_TEST_DATABASE_URL: postgresql+asyncpg://rlb_test:local_test_only@127.0.0.1:5432/rlb_test
+  postgres-runtime:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: ghcr.io/pgmq/pg18-pgmq:v1.10.0
+        env:
+          POSTGRES_USER: rlb_test
+          POSTGRES_PASSWORD: local_test_only
+          POSTGRES_DB: rlb_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U rlb_test -d rlb_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r backend/requirements-dev.txt
+      - run: python -m pytest backend/hosted_integration -q
+        env:
+          RLB_ENV_FILE: backend/.env.example
+          RLB_TEST_DATABASE_URL: postgresql+asyncpg://rlb_test:local_test_only@127.0.0.1:5432/rlb_test
+
+      - name: Disposable database backup and restore
+        run: |
+          docker exec ${{ job.services.postgres.id }} pg_dump -U rlb_test -Fc -f /tmp/rlb.dump rlb_test
+          docker exec ${{ job.services.postgres.id }} createdb -U rlb_test rlb_restore
+          docker exec ${{ job.services.postgres.id }} pg_restore -U rlb_test --exit-on-error -d rlb_restore /tmp/rlb.dump
+          docker exec -i ${{ job.services.postgres.id }} psql -U rlb_test -d rlb_restore -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM tasks) THEN RAISE EXCEPTION 'Restored task missing'; END IF; END $$;
+          SQL
