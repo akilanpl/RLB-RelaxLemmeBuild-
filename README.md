@@ -1,360 +1,287 @@
 <div align="center">
 
 # RLB
-### Relax. Lemme Build.
+### Build on your machine. Control from anywhere.
 
-**An AI software engineering workspace built on a simple idea:**
-**capability and control are not opposites.**
+**An AI engineering runtime that lives on your PC — with a cloud control plane**
+**that lets you watch and direct it from anywhere.**
 
-[![Status](https://img.shields.io/badge/status-active_development-blue)]()
-[![Architecture](https://img.shields.io/badge/architecture-multi--agent-8A2BE2)]()
-[![Stack](https://img.shields.io/badge/stack-Next.js%20%7C%20FastAPI%20%7C%20PostgreSQL-black)]()
-[![License](https://img.shields.io/badge/license-TBD-lightgrey)]()
+[![Status](https://img.shields.io/badge/status-active_architecture_transition-blue)]()
+[![Runtime](https://img.shields.io/badge/runtime-local--first_%7C_Windows-black)]()
+[![Control](https://img.shields.io/badge/control-cloud_%2B_web_console-8A2BE2)]()
 
 </div>
 
 ---
 
-## Product architecture
+## One more thing about where RLB actually runs.
 
-RLB's intended primary mode is a **local Windows runtime with web remote
-control**. The desktop owns project files, task execution, agent workflows,
-tests, and durable local state. The authenticated cloud control plane stores
-device registrations and durable remote commands; the Windows runtime connects
-outbound and continues local work while offline. Hosted Daytona/Railway
-execution remains an optional mode, not a prerequisite for local development.
+We built RLB as a cloud IDE first. A browser tab was the whole product —
+project, agents, sandbox, database, execution, all living on our
+infrastructure, with the web as the only way in.
 
-The repository now includes persistent local tasks and queue state, a guarded
-local process driver, a desktop shell, authenticated device pairing and command
-records, and the remote Devices UI. Desktop pairing enrollment uses
-OS-protected credential storage; complete event/artifact synchronization, local
-workspace registration, and the standalone Windows installer still require
-additional implementation and validation. See [Windows desktop and remote
-control](docs/DESKTOP.md) for the implemented flow and known limits.
+Then we asked the question that mattered more than any feature:
+
+> **Why should your code have to live somewhere else just so AI can work on it?**
+
+So we moved it. Not the philosophy — the *center of gravity*.
+
+**RLB didn't get a new feature. It got a new home: your computer.**
 
 ---
 
-## One more thing about AI coding tools.
+## Before and after
 
-Every AI coding tool today makes the same bet:
+<table>
+<tr><th>Before</th><th>Now</th></tr>
+<tr><td>
 
 ```
-Prompt → LLM → Code
+┌─────────────────────┐
+│     RLB CLOUD       │
+│                      │
+│ Workspace            │
+│ Agents               │
+│ Sandbox              │
+│ Database             │
+│ Execution            │
+└──────────┬───────────┘
+           │
+          WEB
 ```
 
-It's fast. It's magical the first time. And it completely ignores the fact that
-software engineering was never just "generate the code." It's understanding,
-deciding, isolating, testing, reviewing, and — critically — **choosing what
-actually gets to ship.**
+</td><td>
 
-Most AI tools skip straight to the last step and hope for the best.
+```
+      ┌───────────────┐
+      │   RLB CLOUD   │
+      │ Control Plane │
+      └───────┬───────┘
+              │
+        Remote Control
+              │
+              ▼
+ ┌──────────────────────────┐
+ │     RLB ON WINDOWS       │
+ │                          │
+ │ Project · Git            │
+ │ Agents · Workflow        │
+ │ Worker · Tests           │
+ │ Execution · SQLite       │
+ └────────────┬─────────────┘
+              │
+              ▼
+       YOUR CODEBASE
+```
 
-**RLB doesn't skip steps. It builds an engineering organization around them.**
+</td></tr>
+</table>
+
+Same engineering organization. Different place to live.
 
 ---
 
 ## The idea, in one sentence
 
-> **RLB is a multi-agent AI software engineering workspace that orchestrates repository understanding, isolated coding, verification, review, and human-approved promotion — through a persistent, stateful workflow.**
+> **RLB is an AI engineering runtime for your own computer, where specialized agents plan, code, test, and review software under human approval — while a cloud-backed web console lets you control and observe the runtime from anywhere.**
 
-Or, if you'd rather have the version without the semicolons:
-
-> **You tell RLB what to build. Its agents handle the engineering loop. You stay in control of what gets accepted.**
-
----
-
-## Why this needed to exist
-
-Give an AI unrestricted write access to your repository, and you've made a trade:
-speed, for trust. RLB refuses that trade. Instead, it breaks the engineering loop
-into specialized roles, gives each one exactly the permissions it needs and no
-more, and puts a human at every consequential decision point.
-
-| The old way | The RLB way |
-|---|---|
-| One agent, unrestricted repo access | Five specialized agents, scoped permissions |
-| AI writes straight to your codebase | AI writes to an isolated staging workspace |
-| "Trust me, it works" | An inspectable, unified diff |
-| Tests as an afterthought | A dedicated agent whose only job is deciding what *should* be tested |
-| One model reviewing its own work | An independent Reviewer that never touches code |
-| Conversation state, gone when the tab closes | Persistent, durable, queryable application state |
+That's a meaningfully more specific claim than "AI software-engineering
+workspace." It says exactly where the work happens, and exactly what the
+cloud is actually for.
 
 ---
 
-## The Engineering Loop
+## Three Layers, One Clear Owner
 
 ```mermaid
-flowchart TD
-    A[Human Request] --> B[Codebase Understanding]
-    B --> C[Planner]
-    C --> D{Human Plan Approval}
-    D -- Approve --> E[Isolated Staging Workspace]
-    D -- Revise --> C
-    D -- Reject --> Z[Terminated — Canonical Untouched]
-    E --> F[Coder]
-    F --> G[Proposed Diff]
-    G --> H{Human Code Approval}
-    H -- Approve --> I[Atomic Promotion]
-    H -- Request Changes --> F
-    H -- Reject --> Z
-    I --> J[Test Architect]
-    J --> K[Test Executor]
-    K --> L{Pass?}
-    L -- No --> F
-    L -- Yes --> M[Reviewer]
-    M --> N[Final Engineering State]
+flowchart TB
+    subgraph Internet[" "]
+        direction TB
+        CLOUD["RLB Cloud — Control Plane<br/>Auth · Devices · Remote Commands · Events · Artifacts"]
+    end
+    subgraph PC["Your Windows Machine"]
+        direction TB
+        DESKTOP[RLB Desktop / Electron] --> RUNTIME[Local FastAPI Runtime]
+        RUNTIME --> WORKER[Durable Worker]
+        WORKER --> AGENTS["Planner → Coder → Tester → Reviewer"]
+        AGENTS --> PROJECT[Local Project + Git]
+        PROJECT --> EXEC[Local Execution]
+        RUNTIME -.->|SQLite| STATE[(Local Durable State)]
+    end
+    CLOUD <-->|outbound only| DESKTOP
 ```
 
-Two gates. Zero shortcuts. Every step, remembered.
+### 1 · Windows runtime — the actual RLB
+
+This is where the real work happens, full stop. Your machine owns:
+
+- your project files and Git repository
+- task execution and agent workflow
+- the durable local worker
+- SQLite state, local snapshots
+- local testing, staging, and promotion
+
+**And it keeps working even if the internet disappears.** The runtime was
+never designed to depend on a live cloud connection to do its job.
+
+### 2 · Cloud — the control plane, not the computer
+
+The cloud stopped trying to be your development environment. Its job now:
+
+```
+Identity → Device Registration → Device Pairing →
+Remote Commands → Events / Sync → Artifacts
+```
+
+It's coordination infrastructure. It doesn't hold your codebase, and it
+doesn't need to.
+
+### 3 · Web — the remote cockpit
+
+The website is now where you *watch and direct*, not where the work lives.
+Away from your desk, you open RLB and see exactly what your machine is
+doing:
+
+```
+My Windows PC                    ● Online
+
+Current Task
+"Add OAuth authentication"
+
+Planner        ✓ Complete
+Plan Approval  ✓ Approved
+Coder          ● Working
+Tests          Waiting
+
+[ Pause ]  [ Stop ]  [ Send Prompt ]  [ View Events ]  [ View Artifacts ]
+```
+
+You're not running the project in a browser tab. **You're operating a
+machine that's running it for you.**
 
 ---
 
-## Five Agents. One Discipline: Least Privilege.
+## Local-First Is the Principle, Not a Checkbox
 
-RLB doesn't ask one model to pretend to be an entire engineering org. It builds
-the org.
+Your project files never have to leave your computer just because you want
+remote visibility.
 
-<table>
-<tr><th>Agent</th><th>Job</th><th>Permissions</th></tr>
-<tr><td><b>Planner</b></td><td>Understands the request. Produces an implementation plan — affected files, steps, architectural reasoning, validation requirements.</td><td>Read only. Cannot write. Cannot execute.</td></tr>
-<tr><td><b>Coder</b></td><td>Converts an <i>approved</i> plan into real file changes.</td><td>Read + write — to staging <b>only</b>. Never touches canonical.</td></tr>
-<tr><td><b>Test Architect</b></td><td>Decides what should be verified: functional, regression, edge-case, and security behavior.</td><td>Read only. Designs tests, doesn't run them.</td></tr>
-<tr><td><b>Test Executor</b></td><td>Runs the mandatory baseline and generated tests inside a sandbox.</td><td>Execute — sandbox only. No canonical modification.</td></tr>
-<tr><td><b>Reviewer</b></td><td>Independently audits the request, plan, diff, and test results.</td><td>Read only. Cannot rewrite the code it reviews.</td></tr>
-</table>
+```
+Your PC
+│
+├── my-app/                 ← your actual codebase, stays put
+│   ├── src/
+│   ├── package.json
+│   └── ...
+│
+└── RLB
+    ├── workflow
+    ├── agents
+    ├── worker
+    └── SQLite
 
-No agent grades its own homework. No agent has more access than its job requires.
+Windows PC
+    │
+    ├── actual code
+    ├── execution
+    ├── agent work
+    └── task state
+          │
+          │ selected events only
+          ▼
+        Cloud
+          │
+          ▼
+         Web
+```
+
+The cloud doesn't need your repository to let you check on your Coder's
+progress from your phone. It needs a stream of events. That's the whole
+local-first bet.
 
 ---
 
-## Staging Isn't a Feature. It's the Whole Point.
+## What Didn't Change: The Engineering Organization
+
+This is the part we didn't rebuild — because it was never the problem.
 
 ```mermaid
-flowchart LR
-    CANON[Canonical Workspace] -- snapshot --> STAGE[Staging Workspace]
-    STAGE --> AI[AI Changes]
-    AI --> DIFF[Proposed Diff]
-    DIFF --> APPROVE{Human Approval}
-    APPROVE -- Approve --> PROMOTE[Atomic Promotion]
-    PROMOTE --> CANON
+flowchart TB
+    ENGINE[RLB Engine] --> PLANNER[Planner]
+    ENGINE --> CODER[Coder]
+    ENGINE --> REVIEWER[Reviewer]
+    CODER --> STAGING[Staging]
+    PLANNER --> STAGING
+    REVIEWER --> STAGING
+    STAGING --> TA[Test Architect]
+    TA --> TE[Test Executor]
 ```
 
-An AI should be able to experiment freely — without ever putting your accepted
-code at risk. So the Coder never sees the canonical workspace. It sees a
-snapshot. Every change lives in staging until a human looks at the diff and
-says yes.
+And the two human gates are still the spine of the product:
 
-And promotion itself isn't a series of file overwrites hoping nothing breaks
-mid-way — it's designed as an **atomic operation**: validate, apply, update
-canonical, update metadata, snapshot. If it fails, canonical integrity is
-preserved.
+```
+Plan → HUMAN APPROVAL → Code → HUMAN APPROVAL → Promotion → Testing → Review
+```
+
+Specialized roles. Scoped permissions. Staging before canonical. Human
+approval at every consequential step. **None of that moved when the
+runtime did.** It just moved with it, onto your machine.
 
 ---
 
-## The Workflow Doesn't Trust the Model to Run Itself
+## What Happens to Daytona / Railway?
 
-This is the part most AI coding tools don't have at all: an explicit,
-deterministic **workflow state machine**.
+Nothing is deleted. They were demoted — from *required infrastructure* to
+*optional capability*.
 
 ```
-IDLE → ANALYZING → READY → PLANNING → PLAN_REVIEW → STAGING_SETUP →
-CODING → CODE_REVIEW → STAGING_CLEANUP → PROMOTING →
-TEST_PLANNING → TEST_EXECUTING → REVIEWING → COMPLETED
-                                          ↘ CANCELLED / FAILED
+LOCAL MODE     Your Windows PC — the primary mode
+HOSTED MODE    Cloud / Daytona — optional hosted workers, for later
+REMOTE CONTROL Controls either mode, from the same web console
 ```
 
-The model doesn't decide what happens next. **The workflow engine does.**
-Agents perform bounded pieces of work inside states they don't control the
-transitions of. That's what makes the whole loop auditable instead of
-improvised.
-
-Behind it: a durable job queue with leases, heartbeats, and worker ownership —
-because your AI task shouldn't die just because you closed a browser tab.
+**Local Windows execution is the product now.** Hosted execution becomes
+something RLB can offer, not something it depends on.
 
 ---
 
-## Models Are Interchangeable. Your Workflow Isn't.
+## The Current Thesis
 
-```
-Agent Role → Worker → Provider Adapter → Model
-```
+> **AI shouldn't replace your development environment.**
+> **AI should become an engineering organization that operates inside it.**
 
-RLB separates *what an agent's job is* from *which model happens to be doing
-it right now*. A **loadout** decides routing — which worker handles Planning,
-which handles Coding, which handles Review, each with a primary and a
-fallback.
-
-```
-CODER
- ├── Primary:  Worker A
- └── Fallback: Worker C
-```
-
-And when a worker fails mid-task —
-
-```
-Coder → Worker A → 429 Rate Limit → Fallback Worker B → same task, same context, same workflow
-```
-
-— that's **hot swapping**: a model failure doesn't have to mean a task
-failure. Every output keeps its provenance, so the system always knows which
-worker actually produced it.
-
-Currently shipping: a Groq gateway. Architected for: a full provider
-ecosystem, including Gemini and OpenRouter.
-
----
-
-## Nothing Lives Only Inside a Chat Window
-
-Tasks, plans, diffs, approvals, test runs, and review reports are persistent
-application state — not context that evaporates when a conversation ends.
-
-The schema spans **27 relational entities** across users, workers, loadouts,
-workspaces, staging workspaces, files, codebase analyses, conversations,
-tasks, agent runs, plans, approvals, diffs, test plans, test executions,
-build results, reviewer reports, and Git snapshots.
-
-Built on PostgreSQL / Supabase, with Row Level Security, encrypted
-credentials at rest, and server-side authorization — because "trust the
-client" isn't a security model.
-
----
-
-## The Stack
-
-<table>
-<tr><td valign="top">
-
-**Frontend**
-- Next.js
-- React + TypeScript
-- Tailwind CSS
-- Monaco Editor
-- Supabase JS client
-
-</td><td valign="top">
-
-**Backend**
-- FastAPI (Python)
-- Pydantic
-- SQLAlchemy + asyncpg
-- JWT auth
-
-</td><td valign="top">
-
-**Data**
-- PostgreSQL
-- Supabase
-- Row Level Security
-
-</td><td valign="top">
-
-**AI**
-- Provider abstraction
-- Groq gateway
-- Loadouts + fallback
-
-</td><td valign="top">
-
-**Execution**
-- Staging workspaces
-- Sandbox abstraction
-- Daytona integration path
-- Atomic promotion
-
-</td></tr>
-</table>
-
-The workspace itself feels less like a chat window bolted onto a code editor,
-and more like an IDE that happens to have an engineering team living inside
-it — file explorer, editor, AI panel, agent activity feed, diff review, test
-execution, and final review, all in one surface.
+RLB gives that organization roles, permissions, staging, approvals,
+testing, review, persistence — and now, remote control. The agents didn't
+change jobs. They just stopped commuting to the cloud to do them.
 
 ---
 
 ## The Honest Part
 
-Apple keynotes don't usually include a slide like this. We're including one
-anyway, because a control-plane product without honesty about its own state
-would be missing the point.
+Same policy as always: say what's actually true, not what sounds finished.
 
-**Solid foundations already in place:** workspace management, authentication,
-task orchestration, the Planner/Coder/Reviewer services, staging isolation,
-the workflow state machine, provider abstraction, loadouts, persistence, test
-orchestration, the frontend workspace experience, durable worker execution,
-and the security boundaries described above.
+The product direction described here — local-first Windows runtime, cloud
+as control plane, web as remote cockpit — **is the settled direction**, not
+a proposal under debate. The underlying engineering loop (Planner → Coder →
+Test Architect → Test Executor → Reviewer, with two human approval gates)
+carries over unchanged from the original architecture and is not in
+question.
 
-**Implemented and partially staging-verified:** durable workflow, Supabase Auth/RLS,
-private Storage, pgmq recovery and artifact retention have live staging evidence.
-Command lifecycle/output persistence and reconnect polling are implemented.
-Project commands execute only through the sandbox abstraction; real Daytona and
-internet-facing Railway/Vercel acceptance remain blocked by external setup.
-ZIP and public GitHub branch snapshot imports work; private repositories are unsupported.
-No production deployment or production-readiness claim is made.
-
-See [local commands](docs/LOCAL_DEVELOPMENT.md), [hosted setup](docs/HOSTED_SETUP.md),
-and [engineering verification](docs/ENGINEERING_VERIFICATION.md).
-
-So the fair description is:
-
-> **A substantial working foundation for a full AI software-engineering platform, with parts of the final production architecture still being completed.**
+What's still catching up: a handful of architecture and desktop
+implementation-status docs in the repo, particularly around **event
+synchronization** between the local runtime and the cloud, aren't yet
+perfectly in sync with each other or with this direction. The product
+direction itself is consistent — those docs just need a cleanup pass so
+they all describe the same current state. If you hit a doc that contradicts
+this README on an implementation detail, this README reflects the current
+direction.
 
 ---
-
-## What Using RLB Actually Feels Like
-
-```
-You:        "Add OAuth authentication to my application."
-
-RLB:        [analyzes the repository]
-
-Planner:    "Here is what needs to change."
-You:        Approve.
-
-RLB:        [creates isolated staging]
-
-Coder:      [implements the approved plan]
-
-RLB:        "Here is the exact diff."
-You:        Approve.
-
-Test Architect:  "Here is what must be verified."
-Test Executor:   [runs baseline + generated tests]
-
-                 Failures? → structured feedback → Coder → retest
-                 Pass?     → continue
-
-Reviewer:   [audits the full result]
-
-RLB:        Final engineering state.
-```
-
-You're not micromanaging every line. You're also never handing over the
-keys.
-
----
-
-## The Big Picture
-
-> **What happens when AI moves from being a coding assistant to becoming an engineering organization inside the development environment?**
-
-Instead of one model pretending to be Planner, Coder, Tester, Reviewer,
-DevOps, and PM all at once — RLB creates the roles for real, gives each one
-permission boundaries, forces every change through staging → diff → approval
-→ promotion, and treats test → review → audit as non-negotiable instead of
-optional.
-
-That's the whole idea. Everything else is implementation detail.
 
 <div align="center">
 
----
+### RLB — Build on your machine. Control from anywhere.
 
-### RLB — Relax. Lemme Build.
-
-*An AI engineering operating environment. Not an autocomplete tool.*
+*Not a cloud IDE with a desktop app bolted on. A runtime that lives where your code already does.*
 
 </div>
-
-Engineering completion adds safe public GitHub branch import, bounded worker artifact retention, import publication fencing, and stage/recovery limits. Apply hosted migrations through `005_event_delivery.sql`; see [verification status](docs/ENGINEERING_VERIFICATION.md) and [hosted setup](docs/HOSTED_SETUP.md). Staging Supabase was explicitly authorized and tested; see the documented external gates before deployment.
