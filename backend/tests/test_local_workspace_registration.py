@@ -239,7 +239,12 @@ async def test_local_workspace_endpoints_remain_blocked_in_hosted_environments(
     from backend.app.core.config import Settings
 
     monkeypatch.setattr(
-        workspaces_module, "get_settings", lambda: Settings(ENVIRONMENT=environment)
+        workspaces_module,
+        "get_settings",
+        lambda: Settings(
+            ENVIRONMENT=environment,
+            DATABASE_URL="postgresql://test:test@localhost/test",
+        ),
     )
     auth = AuthenticatedUserContext(uuid.uuid4(), {})
     monkeypatch.setitem(app.dependency_overrides, get_authenticated_user, lambda: auth)
