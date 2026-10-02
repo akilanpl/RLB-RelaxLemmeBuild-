@@ -133,6 +133,8 @@ def test_local_git_metadata_redacts_remote_credentials(monkeypatch, project_sand
 @pytest.mark.asyncio
 async def test_local_folder_registration_and_task_creation_api_use_same_workspace(project_sandbox, monkeypatch):
     from backend.app.services import runtime as runtime_module
+    from backend.app.api.v1 import workspaces as workspaces_module
+    from backend.app.core.config import Settings
 
     project = project_sandbox / "api-project"
     project.mkdir()
@@ -151,6 +153,7 @@ async def test_local_folder_registration_and_task_creation_api_use_same_workspac
         workflow=WorkflowEngine(service, InMemoryTaskRepository()),
         queue=queue,
     ))
+    monkeypatch.setattr(workspaces_module, "get_settings", lambda: Settings(ENVIRONMENT="test"))
     user_id = str(uuid.uuid4())
     local_token = "test-local-token"
     monkeypatch.setenv("RLB_LOCAL_API_TOKEN", local_token)
@@ -179,6 +182,85 @@ async def test_local_folder_registration_and_task_creation_api_use_same_workspac
         assert files.status_code == 200
         assert {item["relative_path"] for item in files.json()} == {"main.py", "extra.txt"}
         assert (str(queue.last[0]), str(queue.last[1])) == (created.json()["id"], user_id)
+
+
+@pytest.mark.asyncio
+async def test_local_workspace_refresh_api_is_available_in_test_environment(project_sandbox, monkeypatch):
+    from backend.app.services import runtime as runtime_module
+    from backend.app.api.v1 import workspaces as workspaces_module
+    from backend.app.core.config import Settings
+
+    project = project_sandbox / "refresh-project"
+    project.mkdir()
+    (project / "main.py").write_text("print('before')")
+    service = WorkspaceService(
+        LocalStorageBackend(project_sandbox / "refresh-storage"),
+        local_registry_path=project_sandbox / "refresh-registry.sqlite3",
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_runtime",
+        SimpleNamespace(workspace=service),
+    )
+    monkeypatch.setattr(workspaces_module, "get_settings", lambda: Settings(ENVIRONMENT="test"))
+    user_id = str(uuid.uuid4())
+    local_token = "test-local-token"
+    monkeypatch.setenv("RLB_LOCAL_API_TOKEN", local_token)
+    headers = {"x-user-id": user_id, "X-RLB-Local-Token": local_token}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        registered = await client.post(
+            "/api/v1/workspaces/local",
+            json={"name": "Refresh project", "path": str(project)},
+            headers=headers,
+        )
+        assert registered.status_code == 201, registered.text
+        workspace_id = registered.json()["id"]
+
+        (project / "main.py").write_text("print('after')")
+        refreshed = await client.post(
+            f"/api/v1/workspaces/{workspace_id}/local/refresh",
+            headers=headers,
+        )
+        assert refreshed.status_code == 200, refreshed.text
+        assert refreshed.json()["current_snapshot_hash"] != registered.json()["current_snapshot_hash"]
+        assert await service.read_workspace_file(
+            uuid.UUID(workspace_id), "main.py", uuid.UUID(user_id)
+        ) == b"print('after')"
+
+
+@pytest.mark.parametrize("environment", ["staging", "production"])
+@pytest.mark.asyncio
+async def test_local_workspace_endpoints_remain_blocked_in_hosted_environments(
+    project_sandbox, monkeypatch, environment
+):
+    from backend.app.api.v1 import workspaces as workspaces_module
+    from backend.app.core.auth import AuthenticatedUserContext, get_authenticated_user
+    from backend.app.core.config import Settings
+
+    monkeypatch.setattr(
+        workspaces_module, "get_settings", lambda: Settings(ENVIRONMENT=environment)
+    )
+    auth = AuthenticatedUserContext(uuid.uuid4(), {})
+    monkeypatch.setitem(app.dependency_overrides, get_authenticated_user, lambda: auth)
+    local_token = "test-local-token"
+    monkeypatch.setenv("RLB_LOCAL_API_TOKEN", local_token)
+    headers = {"X-RLB-Local-Token": local_token}
+    workspace_id = uuid.uuid4()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        registered = await client.post(
+            "/api/v1/workspaces/local",
+            json={"name": "Blocked project", "path": str(project_sandbox)},
+            headers=headers,
+        )
+        refreshed = await client.post(
+            f"/api/v1/workspaces/{workspace_id}/local/refresh",
+            headers=headers,
+        )
+
+    assert registered.status_code == 404
+    assert refreshed.status_code == 404
 
 
 @pytest.mark.asyncio
