@@ -1,10 +1,11 @@
 # RLB hosting and account checklist
 
-Implementation is in the existing UEE repository. The authorized non-production Supabase project has been exercised with live Auth/Postgres/Queue/Storage requests. Railway/Vercel deployment and Daytona execution remain blocked; see [verification evidence](ENGINEERING_VERIFICATION.md). No production changes were made.
+The primary product runs RLB's agents and project execution locally on Windows. Supabase/PostgreSQL and the optional Railway/Daytona hosted execution path are used for cloud control-plane and future hosted operation; they are not required for local development. The authorized non-production Supabase project has been exercised with live Auth/Postgres/Queue/Storage requests. See [verification evidence](ENGINEERING_VERIFICATION.md).
 
 ## Accounts and projects to create or confirm
 
 - [x] Supabase **staging** project, explicitly authorized by its owner. Migrations 001–005 applied; private `workspace-artifacts` bucket created.
+- [ ] Apply migration 006 for device control, migration 007 for event cursors, and migration 008 for task artifact metadata before deploying artifact synchronization.
 - [ ] Supabase **production** project. Never use its credentials in local development or tests.
 - [ ] Daytona account, API key, available capacity, and a trusted sandbox image with the Node/Python/build tools supported by your workspaces. Account availability is not yet confirmed.
 - [ ] Vercel project connected to this repository, with Root Directory `frontend`. Assign staging/preview and production environment variables separately.
@@ -13,7 +14,7 @@ Implementation is in the existing UEE repository. The authorized non-production 
 
 ## Supabase setup
 
-1. For a **new empty** project, apply `schema/supabase_schema.sql`, then every numbered migration in `schema/migrations/` in ascending order (001–005). Commit each script separately. For an existing installation matching the prior RLB schema, back up first and apply only the unapplied additive migrations; do not replay the bootstrap schema over existing data. Inspect schema drift before applying migrations.
+1. For a **new empty** project, apply `schema/supabase_schema.sql`, then every numbered migration in `schema/migrations/` in ascending order. For an existing installation matching the prior RLB schema, back up first and apply only the unapplied additive migrations; do not replay the bootstrap schema over existing data. Inspect schema drift before applying migrations.
 2. Enable Supabase Queues/pgmq. Migration 001 creates `task_execution` and transactional task-state triggers. Queue messages carry task identifiers, not credentials or source archives. Keep pgmq access server-only; browser clients must not have queue privileges.
 3. Create a **private** Storage bucket named `workspace-artifacts`. API and worker use a server service-role key; do not make the bucket public.
 4. Obtain the PostgreSQL direct connection or **session pooler** URL on port 5432. Transaction pooling on port 6543 is incompatible with the worker's session advisory locks and is rejected at startup. The database role must be trusted for server-side access.
@@ -123,6 +124,12 @@ Daytona sandboxes are deleted after normal execution/cancellation; the SDK reque
 Apply `schema/migrations/004_artifact_retention.sql` after 003 before starting the updated API/worker. Startup and readiness require its tables. It adds durable cleanup tombstones/progress, fair scan cursors, permanent published-root references and actual fenced queue-delivery counts. Browser roles cannot access these control tables. The trusted server database role must read `storage.objects`; object deletion still uses the existing private Storage service API.
 
 The Railway worker runs retention independently of its consumer: `ARTIFACT_RETENTION_DAYS=7`, `ARTIFACT_CLEANUP_INTERVAL_SECONDS=3600`. Each pass has a 120-second deadline, considers 20 roots and deletes at most 100 objects per root. Canonical/active/published/audit references always win over age. Tombstones are intentionally permanent. Monitor `artifact_cleanup.last_error`, `last_attempt_at`, `completed_at`, `deleted_objects`, plus structured root/error/count logs. Historical snapshots missing root provenance remain protected. Account/legal audit retention should be defined before adding deletion of published evidence.
+
+## Task artifact synchronization: migration 008
+
+Apply `schema/migrations/008_artifacts.sql` after migrations 006–007 before enabling task artifact transfer. It adds `rlb_task_artifacts` with RLS and no browser-role grants; the backend's trusted service role is the only metadata/storage writer. The existing private `workspace-artifacts` bucket stores objects at server-generated `task-artifacts/{workspace}/{task}/{artifact}/{safe-name}` paths. Devices upload only for a task currently reported by the paired device or observed in its authenticated event stream. Metadata binds the artifact to the paired device, owning user, task/workspace UUIDs, size, SHA-256, and expiry. Local task/workspace IDs need not be rows in the hosted `tasks`/`workspaces` tables; they are associated through the device event stream and owner-bound metadata rather than duplicating those local records in cloud storage.
+
+The default artifact cap is 25 MiB and retention follows `ARTIFACT_RETENTION_DAYS` (7 days by default). Authenticated user downloads are streamed through API authorization; no public/signed object URL is returned. The worker tombstones expired metadata before deleting only the exact corresponding Storage object path, and retries failures. This backing schema and implementation have not been validated against a live cloud project; successful staging migration and private-bucket checks remain required.
 
 `MAX_WORKFLOW_STAGE_SECONDS=1800` bounds each active stage (maximum accepted configuration 7200); approval waiting consumes no execution deadline. Delivery recovery is bounded to three actual fenced claims per message. Sandbox deletion calls time out after 30 seconds; provider-side auto-stop/delete remains the crash cleanup backstop and requires live verification.
 

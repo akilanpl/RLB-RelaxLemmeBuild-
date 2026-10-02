@@ -4,12 +4,19 @@ Handles workspace provisioning, canonical storage isolation, file tracking,
 and read-only inspection conforming to Phase 0 contracts.
 """
 
+import asyncio
 import re
 import uuid
 import os
 import hashlib
+import json
+import sqlite3
+import subprocess
+from contextlib import closing
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, List, Dict, Any
+from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID
 from pydantic import BaseModel
 from backend.app.models.workspace import (
@@ -71,8 +78,366 @@ def _row_to_workspace(row: Any) -> Workspace:
 class WorkspaceService:
     """Service governing canonical Approved Workspace lifecycle."""
 
-    def __init__(self, storage: Optional[BaseStorageBackend] = None):
+    def __init__(
+        self,
+        storage: Optional[BaseStorageBackend] = None,
+        local_registry_path: Optional[str | Path] = None,
+    ):
         self.storage = storage or get_storage_backend()
+        if local_registry_path is None:
+            from backend.app.core.config import get_settings
+            local_registry_path = Path(get_settings().LOCAL_DATA_DIR) / "rlb.sqlite3"
+        self.local_registry_path = Path(local_registry_path)
+
+    def _open_local_registry(self):
+        self.local_registry_path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.local_registry_path)
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS local_workspace_registry (
+                workspace_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                workspace_json TEXT NOT NULL,
+                files_json TEXT NOT NULL
+            )
+            """
+        )
+        return connection
+
+    def _persist_local_registration(
+        self, workspace: Workspace, file_records: List[Dict[str, Any]]
+    ) -> None:
+        if not workspace.local_path:
+            return
+        with closing(self._open_local_registry()) as connection, connection:
+            connection.execute(
+                """
+                INSERT INTO local_workspace_registry
+                    (workspace_id, user_id, workspace_json, files_json)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(workspace_id) DO UPDATE SET
+                    user_id=excluded.user_id,
+                    workspace_json=excluded.workspace_json,
+                    files_json=excluded.files_json
+                """,
+                (
+                    str(workspace.id),
+                    str(workspace.user_id),
+                    workspace.model_dump_json(),
+                    json.dumps(file_records, separators=(",", ":")),
+                ),
+            )
+
+    def _load_local_registrations(self, user_id: Optional[UUID] = None) -> None:
+        if not self.local_registry_path.is_file():
+            return
+        try:
+            with closing(sqlite3.connect(self.local_registry_path)) as connection:
+                rows = connection.execute(
+                    """
+                    SELECT workspace_json, files_json FROM local_workspace_registry
+                    WHERE (? IS NULL OR user_id = ?)
+                    """,
+                    (str(user_id) if user_id else None, str(user_id) if user_id else None),
+                ).fetchall()
+            for workspace_json, files_json in rows:
+                try:
+                    workspace = Workspace.model_validate_json(workspace_json)
+                    files = json.loads(files_json)
+                except (ValueError, TypeError):
+                    continue
+                _MEMORY_WORKSPACES[workspace.id] = workspace
+                _MEMORY_FILES[workspace.id] = files
+        except (sqlite3.Error, OSError):
+            # The task/queue database may predate workspace registration.
+            return
+
+    @staticmethod
+    def _scan_local_project(root: Path) -> List[Dict[str, Any]]:
+        """Read a bounded project snapshot without following symlinks."""
+        from backend.app.services.zip_import import ZipImportService
+
+        ignored = {
+            ".git", "node_modules", ".venv", "venv", "__pycache__", ".next",
+            "dist", "build", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+        }
+        entries: List[Dict[str, Any]] = []
+        total = 0
+        def raise_walk_error(error: OSError) -> None:
+            raise ZipValidationError("The selected local folder contains an unreadable directory.") from error
+
+        for current, directories, filenames in os.walk(
+            root, followlinks=False, onerror=raise_walk_error
+        ):
+            current_path = Path(current)
+            directories[:] = [
+                name for name in directories
+                if name not in ignored and not WorkspaceService._is_directory_link(current_path / name)
+            ]
+            for filename in filenames:
+                source = current_path / filename
+                if (
+                    source.is_symlink()
+                    or filename == ".DS_Store"
+                    or (filename.startswith(".") and ".rlb-" in filename)
+                ):
+                    continue
+                try:
+                    resolved = source.resolve(strict=True)
+                    if os.path.commonpath((str(root), str(resolved))) != str(root):
+                        continue
+                    if not resolved.is_file():
+                        continue
+                    size = resolved.stat().st_size
+                    if size > ZipImportService.MAX_UNCOMPRESSED_BYTES:
+                        raise ZipValidationError("A local project file exceeds the 100 MB import limit.")
+                    relative = WorkspaceService._normalize_import_path(
+                        resolved.relative_to(root).as_posix()
+                    )
+                    content = resolved.read_bytes()
+                except ValueError:
+                    continue
+                except OSError as exc:
+                    raise ZipValidationError("The selected local folder contains an unreadable file.") from exc
+                total += len(content)
+                if total > ZipImportService.MAX_UNCOMPRESSED_BYTES:
+                    raise ZipValidationError("Local project exceeds the 100 MB import limit.")
+                entries.append({
+                    "relative_path": relative,
+                    "content": content,
+                })
+                if len(entries) > ZipImportService.MAX_FILE_COUNT:
+                    raise ZipValidationError("Local project exceeds the 5,000 file limit.")
+        return entries
+
+    @staticmethod
+    def _is_directory_link(path: Path) -> bool:
+        is_junction = getattr(path, "is_junction", None)
+        return path.is_symlink() or bool(is_junction and is_junction())
+
+    @staticmethod
+    def _snapshot_hash(entries: List[Dict[str, Any]]) -> str:
+        digest = hashlib.sha256()
+        for item in sorted(entries, key=lambda entry: entry["relative_path"]):
+            digest.update(item["relative_path"].encode())
+            digest.update(b"\0")
+            digest.update(item["content"])
+            digest.update(b"\0")
+        return digest.hexdigest()
+
+    @staticmethod
+    def _safe_local_path(root: Path, relative_path: str) -> Path:
+        clean = WorkspaceService._normalize_import_path(relative_path)
+        candidate = root
+        for component in Path(clean).parts:
+            candidate = candidate / component
+            if candidate.is_symlink():
+                raise ValueError("A local project path now contains a symbolic link.")
+            if os.path.commonpath((str(root), str(candidate.resolve(strict=False)))) != str(root):
+                raise ValueError("A local project path escapes the selected folder.")
+        return candidate
+
+    async def _publish_local_snapshot(
+        self,
+        workspace: Workspace,
+        file_contents: Dict[str, bytes],
+        previous_records: List[Dict[str, Any]],
+    ) -> None:
+        """Write an approved canonical snapshot back to its registered project."""
+        if not workspace.local_path:
+            return
+        root = Path(workspace.local_path).resolve(strict=True)
+        if not root.is_dir():
+            raise ValueError("The registered local project folder is unavailable.")
+        current_entries = await asyncio.to_thread(self._scan_local_project, root)
+        if (
+            workspace.current_snapshot_hash
+            and self._snapshot_hash(current_entries) != workspace.current_snapshot_hash
+        ):
+            raise ValueError("The local project changed after this task started; refresh and retry.")
+        await asyncio.to_thread(
+            self._write_local_snapshot_files, root, file_contents, previous_records
+        )
+
+    @staticmethod
+    def _write_local_snapshot_files(
+        root: Path,
+        file_contents: Dict[str, bytes],
+        previous_records: List[Dict[str, Any]],
+    ) -> None:
+        for relative, content in file_contents.items():
+            destination = WorkspaceService._safe_local_path(root, relative)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination = WorkspaceService._safe_local_path(root, relative)
+            if not destination.exists() or destination.read_bytes() != content:
+                temporary = destination.with_name(f".{destination.name}.rlb-{uuid.uuid4().hex}")
+                try:
+                    temporary.write_bytes(content)
+                    os.replace(temporary, destination)
+                finally:
+                    if temporary.exists():
+                        temporary.unlink()
+
+        retained = set(file_contents)
+        for record in previous_records:
+            relative = record.get("relative_path")
+            if not relative or relative in retained:
+                continue
+            destination = WorkspaceService._safe_local_path(root, str(relative))
+            if destination.is_file():
+                destination.unlink()
+
+    @staticmethod
+    def _local_git_metadata(root: Path) -> Dict[str, Optional[str]]:
+        def run(*args: str) -> str:
+            result = subprocess.run(
+                ["git", "-C", str(root), *args],
+                capture_output=True, text=True, timeout=4, check=False,
+            )
+            return result.stdout.strip() if result.returncode == 0 else ""
+
+        try:
+            branch = run("rev-parse", "--abbrev-ref", "HEAD")
+            if not branch:
+                return {"git_remote_url": None, "git_branch": None, "git_status": None}
+            remote = run("remote", "get-url", "origin") or None
+            if remote and remote.startswith(("http://", "https://")):
+                try:
+                    parsed = urlsplit(remote)
+                    hostname = parsed.hostname
+                    port = parsed.port
+                except ValueError:
+                    remote = None
+                else:
+                    if not hostname:
+                        remote = None
+                    else:
+                        hostname = f"[{hostname}]" if ":" in hostname else hostname
+                        netloc = f"{hostname}:{port}" if port else hostname
+                        remote = urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+            changes = run("status", "--porcelain")
+            status = "clean" if not changes else f"{len(changes.splitlines())} uncommitted change(s)"
+            return {
+                "git_remote_url": remote,
+                "git_branch": branch,
+                "git_status": status,
+            }
+        except (OSError, subprocess.SubprocessError):
+            return {"git_remote_url": None, "git_branch": None, "git_status": None}
+
+    async def register_local_workspace(
+        self,
+        user_id: UUID,
+        name: str,
+        local_path: str,
+        description: Optional[str] = None,
+    ) -> Workspace:
+        """Register a selected local project and persist a safe snapshot and its path."""
+        if not name.strip():
+            raise ValueError("Workspace name is required.")
+        try:
+            root = Path(local_path).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise ValueError("The selected local folder is unavailable.") from exc
+        if not root.is_dir():
+            raise ValueError("The selected local path must be a directory.")
+        self._load_local_registrations(user_id)
+        existing = next(
+            (
+                workspace for workspace in _MEMORY_WORKSPACES.values()
+                if workspace.user_id == user_id and workspace.local_path == str(root)
+            ),
+            None,
+        )
+        if existing is not None:
+            return await self.refresh_local_workspace(existing.id, user_id)
+        entries = await asyncio.to_thread(self._scan_local_project, root)
+        metadata = await asyncio.to_thread(self._local_git_metadata, root)
+        workspace = await self.create_workspace(user_id=user_id, name=name, description=description)
+        snapshot_root = f"workspaces/{workspace.id}/snapshots/{uuid.uuid4()}"
+        file_records: List[Dict[str, Any]] = []
+        try:
+            for item in sorted(entries, key=lambda entry: entry["relative_path"]):
+                content = item["content"]
+                relative = item["relative_path"]
+                await self.storage.write_file(f"{snapshot_root}/{relative}", content)
+                file_hash = hashlib.sha256(content).hexdigest()
+                file_records.append({
+                    "id": str(uuid.uuid4()),
+                    "workspace_id": str(workspace.id),
+                    "relative_path": relative,
+                    "file_type": "file",
+                    "size_bytes": len(content),
+                    "sha256_hash": file_hash,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                })
+            workspace = workspace.model_copy(update={
+                "canonical_root_path": snapshot_root,
+                "file_count": len(file_records),
+                "total_size_bytes": sum(item["size_bytes"] for item in file_records),
+                "current_snapshot_hash": self._snapshot_hash(entries),
+                "local_path": str(root),
+                **metadata,
+                "updated_at": datetime.now(timezone.utc),
+            })
+            _MEMORY_WORKSPACES[workspace.id] = workspace
+            _MEMORY_FILES[workspace.id] = file_records
+            await self._persist_workspace(workspace, file_records)
+            self._persist_local_registration(workspace, file_records)
+        except BaseException:
+            await self.storage.delete_directory(snapshot_root)
+            await self.storage.delete_directory(f"workspaces/{workspace.id}/canonical")
+            _MEMORY_WORKSPACES.pop(workspace.id, None)
+            _MEMORY_FILES.pop(workspace.id, None)
+            raise
+        return workspace
+
+    async def refresh_local_workspace(self, workspace_id: UUID, user_id: UUID) -> Workspace:
+        """Refresh a registered folder snapshot before a task is created."""
+        workspace = await self.get_workspace(workspace_id, user_id)
+        if not workspace.local_path:
+            return workspace
+        root = Path(workspace.local_path).resolve(strict=True)
+        entries = await asyncio.to_thread(self._scan_local_project, root)
+        metadata = await asyncio.to_thread(self._local_git_metadata, root)
+        # Publish a new immutable storage snapshot without routing through the
+        # empty-workspace import contract.
+        extracted = []
+        for item in entries:
+            content = item["content"]
+            extracted.append({
+                **item,
+                "size_bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            })
+        root_prefix = f"workspaces/{workspace.id}/snapshots/{uuid.uuid4()}"
+        file_records: List[Dict[str, Any]] = []
+        for item in extracted:
+            await self.storage.write_file(
+                f"{root_prefix}/{item['relative_path']}", item["content"]
+            )
+            file_records.append({
+                "id": str(uuid.uuid4()),
+                "workspace_id": str(workspace.id),
+                "relative_path": item["relative_path"],
+                "file_type": "file",
+                "size_bytes": item["size_bytes"],
+                "sha256_hash": item["sha256"],
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+        updated = workspace.model_copy(update={
+            "canonical_root_path": root_prefix,
+            "file_count": len(file_records),
+            "total_size_bytes": sum(item["size_bytes"] for item in extracted),
+            "current_snapshot_hash": self._snapshot_hash(extracted),
+            **metadata,
+            "updated_at": datetime.now(timezone.utc),
+        })
+        _MEMORY_WORKSPACES[workspace.id] = updated
+        _MEMORY_FILES[workspace.id] = file_records
+        await self._persist_workspace(updated, file_records)
+        self._persist_local_registration(updated, file_records)
+        return updated
 
     async def _persist_workspace(self, workspace: Workspace, file_records: List[Dict[str, Any]]) -> None:
         """Best-effort Postgres sync so tasks/analysis FK constraints succeed."""
@@ -337,11 +702,13 @@ class WorkspaceService:
         prefix = workspace.canonical_root_path.rstrip("/")
         stored_paths = await self.storage.list_files(prefix)
         records: List[Dict[str, Any]] = []
+        file_contents: Dict[str, bytes] = {}
         total_bytes = 0
         digest = hashlib.sha256()
         for path in sorted(stored_paths):
             relative = path[len(prefix) + 1:] if path.startswith(prefix + "/") else path
             content = await self.storage.read_file(path)
+            file_contents[relative] = content
             total_bytes += len(content)
             file_hash = hashlib.sha256(content).hexdigest()
             digest.update(relative.encode())
@@ -357,9 +724,13 @@ class WorkspaceService:
                 "sha256_hash": file_hash,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             })
+        previous_records = [
+            dict(item) for item in _MEMORY_FILES.get(workspace.id, [])
+        ]
+        await self._publish_local_snapshot(workspace, file_contents, previous_records)
         previous = {
             item["relative_path"]
-            for item in _MEMORY_FILES.get(workspace.id, [])
+            for item in previous_records
             if item.get("relative_path")
         }
         removed = previous - {item["relative_path"] for item in records}
@@ -372,6 +743,7 @@ class WorkspaceService:
         _MEMORY_WORKSPACES[workspace.id] = updated
         _MEMORY_FILES[workspace.id] = records
         await self._persist_workspace(updated, records)
+        self._persist_local_registration(updated, records)
         await self._mark_files_deleted(workspace.id, removed)
         return updated
 
@@ -389,6 +761,7 @@ class WorkspaceService:
         _MEMORY_WORKSPACES[workspace.id] = updated
         _MEMORY_FILES[workspace.id] = records
         await self._persist_workspace(updated, records)
+        self._persist_local_registration(updated, records)
         sessions = get_sessionmaker()
         if sessions is not None:
             kept = {item["relative_path"] for item in records}
@@ -431,8 +804,13 @@ class WorkspaceService:
     async def get_workspace(self, workspace_id: UUID, user_id: UUID) -> Workspace:
         """Fetch workspace verifying that user owns it."""
         # Separate Railway processes must see the current canonical pointer.
-        ws = (await self._load_workspace_from_db(workspace_id)
-              if get_sessionmaker() is not None else _MEMORY_WORKSPACES.get(workspace_id))
+        self._load_local_registrations(user_id)
+        cached = _MEMORY_WORKSPACES.get(workspace_id)
+        ws = cached if cached and cached.local_path else None
+        if ws is None and get_sessionmaker() is not None:
+            ws = await self._load_workspace_from_db(workspace_id)
+        if ws is None:
+            ws = cached
         if not ws:
             raise WorkspaceNotFoundError(f"Workspace '{workspace_id}' not found.")
         if ws.user_id != user_id:
@@ -441,6 +819,7 @@ class WorkspaceService:
 
     async def list_user_workspaces(self, user_id: UUID) -> List[Workspace]:
         """List all non-archived workspaces owned by the user."""
+        self._load_local_registrations(user_id)
         sessions = get_sessionmaker()
         if sessions is not None:
             async with sessions() as session:
@@ -458,11 +837,13 @@ class WorkspaceService:
                 ).mappings().all()
                 for row in rows:
                     ws = _row_to_workspace(row)
-                    _MEMORY_WORKSPACES[ws.id] = ws
-        return [
+                    existing = _MEMORY_WORKSPACES.get(ws.id)
+                    if existing is None or not existing.local_path:
+                        _MEMORY_WORKSPACES[ws.id] = ws
+        return sorted([
             ws for ws in _MEMORY_WORKSPACES.values()
             if ws.user_id == user_id and not ws.is_archived
-        ]
+        ], key=lambda item: item.updated_at, reverse=True)
 
     async def list_workspace_files(self, workspace_id: UUID, user_id: UUID) -> List[Dict[str, Any]]:
         """Return the list of tracked files for an approved workspace."""
@@ -589,4 +970,5 @@ class WorkspaceService:
         await self._persist_workspace(updated, file_records)
         _MEMORY_WORKSPACES[workspace_id] = updated
         _MEMORY_FILES[workspace_id] = file_records
+        self._persist_local_registration(updated, file_records)
         return updated

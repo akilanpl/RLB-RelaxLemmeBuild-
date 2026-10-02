@@ -42,6 +42,9 @@ class JobQueue(Protocol):
     async def fail(self, job_id: UUID, worker_id: str, error: str): ...
     async def release(self, job_id: UUID, worker_id: str): ...
     async def wait_for_approval(self, job_id: UUID, worker_id: str): ...
+    async def pause_task(self, task_id: UUID, user_id: UUID): ...
+    async def resume_task(self, task_id: UUID, user_id: UUID): ...
+    async def is_paused(self, task_id: UUID): ...
 
 
 class LocalJobQueue:
@@ -51,6 +54,8 @@ class LocalJobQueue:
         self.workflow = workflow
         self.lease_seconds = lease_seconds
         self.jobs: Dict[UUID, Job] = {}
+        self.paused_tasks: set[UUID] = set()
+        self._prompts: Dict[UUID, list[str]] = {}
         self._lock = asyncio.Lock()
 
     async def enqueue(self, task_id: UUID, user_id: UUID) -> Job:
@@ -78,6 +83,8 @@ class LocalJobQueue:
                 if job.status != JobStatus.PENDING:
                     continue
                 task = await self.workflow.get_task(job.task_id, job.user_id)
+                if job.task_id in self.paused_tasks:
+                    continue
                 if task.status in {WorkflowState.CANCELLED, WorkflowState.COMPLETED, WorkflowState.FAILED}:
                     job.status = JobStatus.COMPLETED
                     continue
@@ -87,6 +94,38 @@ class LocalJobQueue:
                 job.attempts += 1
                 return job
             return None
+
+    async def pause_task(self, task_id: UUID, user_id: UUID) -> None:
+        await self.workflow.get_task(task_id, user_id)
+        async with self._lock:
+            self.paused_tasks.add(task_id)
+
+    async def resume_task(self, task_id: UUID, user_id: UUID) -> None:
+        await self.workflow.get_task(task_id, user_id)
+        async with self._lock:
+            self.paused_tasks.discard(task_id)
+
+    async def is_paused(self, task_id: UUID) -> bool:
+        async with self._lock:
+            return task_id in self.paused_tasks
+
+    async def add_prompt(self, task_id: UUID, user_id: UUID, prompt: str) -> None:
+        await self.workflow.get_task(task_id, user_id)
+        async with self._lock:
+            self._prompts.setdefault(task_id, []).append(prompt)
+
+    async def pending_prompts(self, task_id: UUID) -> list[str]:
+        async with self._lock:
+            return list(self._prompts.get(task_id, []))
+
+    async def clear_prompts(self, task_id: UUID, count: int) -> None:
+        async with self._lock:
+            pending = self._prompts.get(task_id, [])
+            remaining = pending[count:]
+            if remaining:
+                self._prompts[task_id] = remaining
+            else:
+                self._prompts.pop(task_id, None)
 
     async def heartbeat(self, job_id: UUID, worker_id: str) -> Job:
         async with self._lock:

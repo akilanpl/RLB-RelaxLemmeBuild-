@@ -48,6 +48,13 @@ class DurableTaskWorker:
                 await _mark_failed(self.queue.workflow, job, RuntimeError('Worker recovery retry limit exhausted.'))
                 return await self.queue.complete(job.id, self.worker_id)
             while True:
+                is_paused = getattr(self.queue, "is_paused", None)
+                while is_paused and await is_paused(job.task_id):
+                    task = await self.queue.workflow.get_task(job.task_id, job.user_id)
+                    if task.status in {WorkflowState.CANCELLED, WorkflowState.COMPLETED, WorkflowState.FAILED}:
+                        break
+                    await self.queue.heartbeat(job.id, self.worker_id)
+                    await asyncio.sleep(min(1.0, max(0.05, self.queue.lease_seconds / 4)))
                 task = await self.queue.workflow.get_task(job.task_id, job.user_id)
                 if task.status in {WorkflowState.CANCELLED, WorkflowState.COMPLETED, WorkflowState.FAILED}:
                     return await self.queue.complete(job.id, self.worker_id)
@@ -144,6 +151,8 @@ def build_default_worker(queue: JobQueue, worker_id: str, planner, coder, review
         try:
             history = await workflow.get_history(job.task_id, job.user_id)
             feedback = history[-1].metadata.get("feedback") if history else None
+            prompts = await queue.pending_prompts(job.task_id) if hasattr(queue, "pending_prompts") else []
+            feedback = "\n\n".join(value for value in [feedback, *prompts] if value) or None
             plan = await planner.execute(job.task_id, job.user_id, feedback)
         except Exception as exc:
             await _mark_failed(workflow, job, exc)
@@ -152,6 +161,8 @@ def build_default_worker(queue: JobQueue, worker_id: str, planner, coder, review
         await workflow.transition(task.id, WorkflowState.PLAN_REVIEW, ActorType.SYSTEM, None,
                                   "Planner produced a structured plan",
                                   {"plan_id": str(plan.id)}, expected_version=task.version)
+        if hasattr(queue, "clear_prompts"):
+            await queue.clear_prompts(job.task_id, len(prompts))
         return WorkflowState.PLAN_REVIEW
 
     async def staging_setup(job):
@@ -174,6 +185,8 @@ def build_default_worker(queue: JobQueue, worker_id: str, planner, coder, review
         try:
             history = await workflow.get_history(job.task_id, job.user_id)
             feedback = history[-1].metadata.get("feedback") if history else None
+            prompts = await queue.pending_prompts(job.task_id) if hasattr(queue, "pending_prompts") else []
+            feedback = "\n\n".join(value for value in [feedback, *prompts] if value) or None
             proposal = await coder.execute(task.id, job.user_id, task.active_staging_workspace_id, feedback)
         except Exception as exc:
             await _mark_failed(workflow, job, exc)
@@ -182,6 +195,8 @@ def build_default_worker(queue: JobQueue, worker_id: str, planner, coder, review
         await workflow.transition(task.id, WorkflowState.CODE_REVIEW, ActorType.SYSTEM, None,
                                   "Coder produced a structured code proposal",
                                   {"proposal_id": str(proposal.id)}, expected_version=task.version)
+        if hasattr(queue, "clear_prompts"):
+            await queue.clear_prompts(job.task_id, len(prompts))
         return WorkflowState.CODE_REVIEW
 
     async def testing(job):

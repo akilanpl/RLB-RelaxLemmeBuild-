@@ -39,6 +39,9 @@ class WorkspaceBase(BaseModel):
     total_size_bytes: int = Field(default=0, description="Total size in bytes")
     current_snapshot_hash: Optional[str] = Field(None, description="Current git snapshot SHA or hash")
     git_remote_url: Optional[str] = Field(None, description="Optional upstream repository remote")
+    local_path: Optional[str] = Field(None, description="Registered local project directory, when available")
+    git_branch: Optional[str] = Field(None, description="Detected local Git branch")
+    git_status: Optional[str] = Field(None, description="Summary of local Git working-tree changes")
 
 
 class Workspace(WorkspaceBase):

@@ -19,6 +19,9 @@ export interface Workspace {
   totalSizeBytes: number;
   currentSnapshotHash?: string;
   gitRemoteUrl?: string;
+  localPath?: string;
+  gitBranch?: string;
+  gitStatus?: string;
   isArchived: boolean;
   createdAt: string;
   updatedAt: string;
@@ -121,4 +124,3 @@ export interface CodebaseAnalysisResult {
 
 // Retain legacy alias for compatibility
 export type CodebaseAnalysis = CodebaseAnalysisResult;
-

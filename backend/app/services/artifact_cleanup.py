@@ -7,8 +7,12 @@ import asyncio
 import logging
 import re
 from sqlalchemy import text
+from backend.app.services.task_artifacts import safe_artifact_name
 
 ROOT = re.compile(r'^workspaces/([0-9a-f-]{36})/(canonical|(?:staging|snapshots)/[0-9a-f-]{36})$')
+TASK_ARTIFACT_PATH = re.compile(
+    r'^task-artifacts/[0-9a-f-]{36}/[0-9a-f-]{36}/[0-9a-f-]{36}/[A-Za-z0-9][A-Za-z0-9._ -]{0,119}$'
+)
 log = logging.getLogger(__name__)
 
 
@@ -114,6 +118,44 @@ class ArtifactCleaner:
         return deleted
 
 
+async def cleanup_expired_task_artifacts(engine, storage, limit=100):
+    """Tombstone expired task artifacts before removing exact object paths."""
+    async with engine.begin() as conn:
+        rows = (await conn.execute(text("""
+            SELECT id,object_path FROM rlb_task_artifacts
+            WHERE expires_at<=now() AND cleanup_completed_at IS NULL
+            ORDER BY expires_at LIMIT :limit FOR UPDATE SKIP LOCKED
+        """), {"limit": limit})).mappings().all()
+        if rows:
+            await conn.execute(text("""
+                UPDATE rlb_task_artifacts SET deleted_at=coalesce(deleted_at,now())
+                WHERE id=ANY(:ids)
+            """), {"ids": [row["id"] for row in rows]})
+
+    deleted = 0
+    for row in rows:
+        path = row["object_path"]
+        try:
+            safe_name = safe_artifact_name(path.rsplit("/", 1)[-1])
+        except ValueError:
+            safe_name = ""
+        if (not TASK_ARTIFACT_PATH.fullmatch(path) or ".." in path.split("/")
+                or not safe_name or path.rsplit("/", 1)[-1] != safe_name):
+            log.error("Refusing unsafe task artifact cleanup path.")
+            continue
+        try:
+            await storage.delete_file(path)
+            async with engine.begin() as conn:
+                await conn.execute(text("""
+                    UPDATE rlb_task_artifacts SET cleanup_completed_at=now()
+                    WHERE id=:id AND deleted_at IS NOT NULL
+                """), {"id": row["id"]})
+            deleted += 1
+        except Exception as exc:
+            log.warning("Task artifact cleanup retry id=%s error=%s", row["id"], type(exc).__name__)
+    return deleted
+
+
 async def cleanup_loop(engine, storage, settings):
     cleaner = ArtifactCleaner(ArtifactCleanupRepository(engine, settings.SUPABASE_STORAGE_BUCKET,
         settings.ARTIFACT_RETENTION_DAYS), storage)
@@ -121,6 +163,7 @@ async def cleanup_loop(engine, storage, settings):
         try:
             async with asyncio.timeout(120):
                 await cleaner.run_once()
+                await cleanup_expired_task_artifacts(engine, storage)
         except Exception as exc:
             log.error('Artifact cleanup pass failed error=%s', type(exc).__name__)
         await asyncio.sleep(settings.ARTIFACT_CLEANUP_INTERVAL_SECONDS)

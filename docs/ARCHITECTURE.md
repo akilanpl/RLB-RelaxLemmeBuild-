@@ -1,8 +1,17 @@
-# System Architecture: Cloud-Based AI Software Engineering Workspace
+# System Architecture: Windows Runtime and Web Control Plane
 
 ## 1. Executive Summary
 
-This document defines the architectural foundations for the persistent cloud-based AI software engineering workspace. The platform empowers developers to work alongside specialized autonomous agents in an isolated, secure, and auditable environment.
+RLB's primary execution authority is the user's Windows machine. The local
+runtime owns project files, SQLite-backed task/queue state, workflow execution,
+and local process execution. The web application is the authenticated remote
+control and observability surface. The cloud stores device/pairing/command
+control-plane data and must not be required for local task execution. Hosted
+PostgreSQL/Supabase/Daytona execution remains optional.
+
+The existing specialized Planner, Coder, Test Architect, Test Executor, Reviewer,
+approval gates, workflow state machine, and provider/loadout architecture remain
+the RLB engineering core.
 
 ### Core Architectural Axioms
 1. **Workspace State Decoupling**: The workspace and its persistence layers own all state (files, tasks, plans, diffs, test results, approvals). AI models are stateless, replaceable worker units.
@@ -14,6 +23,31 @@ This document defines the architectural foundations for the persistent cloud-bas
 ---
 
 ## 2. High-Level Architecture
+
+```mermaid
+flowchart LR
+    WEB[Next.js Web Control] -->|Supabase user JWT| CLOUD[Control API + PostgreSQL]
+    CLOUD <-->|Outbound HTTPS device session| DESKTOP[Windows Electron App]
+    DESKTOP --> API[Loopback FastAPI]
+    API --> SQLITE[(SQLite)]
+    API --> WORKER[Local Durable Worker]
+    WORKER --> AGENTS[Existing Agents + Workflow]
+    AGENTS --> PROJECT[Local Project Files + Git]
+    WORKER --> EXEC[Constrained Local Process Driver]
+    CLOUD -. optional hosted mode .-> DAYTONA[Hosted Queue / Daytona]
+```
+
+The device connection is outbound-only. Device credentials authenticate the
+machine separately from a browser user's Supabase session. Device and command
+tables are service-role-only under RLS; API ownership checks bind commands and
+devices to the authenticated user. Local execution continues if the control
+plane is unavailable.
+
+The current device transport uses authenticated HTTPS polling with heartbeat
+and command acknowledgements (an outbound WebSocket is not required). Local
+event outbox synchronization and cloud artifact transfer are not implemented
+yet; the web UI labels device events as unavailable instead of reporting an
+empty live stream.
 
 ```mermaid
 flowchart TD

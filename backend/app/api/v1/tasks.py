@@ -14,6 +14,7 @@ from backend.app.services.task_service import (
     WorkflowConflictError, workflow_engine,
 )
 from backend.app.services.workspace_service import WorkspaceNotFoundError
+from backend.app.services.zip_import import ZipValidationError
 from backend.app.services.planner_service import PlannerExecutionError, planner_service
 from backend.app.services.coder_service import CoderExecutionError, coder_service
 from backend.app.workflow.states import WorkflowState
@@ -85,6 +86,10 @@ class CoderRequest(BaseModel):
 async def create_task(request: CreateTaskRequest, auth: AuthenticatedUserContext = Depends(get_authenticated_user)):
     try:
         workspace = await workflow_engine.workspace_service.get_workspace(request.workspace_id, auth.user_id)
+        if workspace.local_path:
+            workspace = await workflow_engine.workspace_service.refresh_local_workspace(
+                workspace.id, auth.user_id
+            )
         task = await workflow_engine.create_task(workspace, auth.user_id, request.title, request.objective)
         await job_queue.enqueue(task.id, auth.user_id)
         return task
@@ -94,6 +99,8 @@ async def create_task(request: CreateTaskRequest, auth: AuthenticatedUserContext
         raise HTTPException(status_code=404, detail="Workspace not found.")
     except (TaskAccessDeniedError, PermissionError):
         raise HTTPException(status_code=403, detail="Workspace access denied.")
+    except (OSError, ValueError, ZipValidationError) as exc:
+        raise HTTPException(status_code=409, detail=f"Local project is unavailable: {exc}")
 
 
 async def _get_task_or_error(task_id: UUID, auth: AuthenticatedUserContext):

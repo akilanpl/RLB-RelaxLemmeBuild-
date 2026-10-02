@@ -6,18 +6,35 @@ import os
 from pathlib import Path
 from dotenv import dotenv_values
 
-if __name__ == '__main__':
-    from backend.app.core.config import Settings
-    root = Path(__file__).resolve().parent
-    source = root / '.env.local'
-    values = dotenv_values(source if source.exists() else root / '.env.example')
-    # Drop inherited cloud configuration before loading the explicit local file.
-    for name in Settings.model_fields:
+
+def configure_local_environment(values, setting_names, data_dir=None):
+    runtime_settings = {
+        name: os.environ[name]
+        for name in ("RLB_CONTROL_PLANE_URL", "RLB_DEVICE_TOKEN", "RLB_DESKTOP_ORIGIN")
+        if name in os.environ
+    }
+    for name in setting_names:
         os.environ.pop(name, None)
     for name, value in values.items():
         if value is not None:
             os.environ[name] = value
-    os.environ['ENVIRONMENT'] = 'development'
-    Settings.model_config['env_file'] = str(source) if source.exists() else str(root / '.env.example')
+    os.environ.update(runtime_settings)
+    os.environ["ENVIRONMENT"] = "development"
+    if data_dir:
+        os.environ["LOCAL_DATA_DIR"] = data_dir
+
+
+if __name__ == '__main__':
+    from backend.app.core.config import Settings
+    root = Path(__file__).resolve().parent
+    configured = Path(os.environ['RLB_ENV_FILE']) if os.environ.get('RLB_ENV_FILE') else None
+    source = configured if configured and configured.is_file() else root / '.env.local'
+    if not source.is_file():
+        source = root / '.env.example'
+    values = dotenv_values(source)
+    data_dir = os.environ.get('RLB_DATA_DIR')
+    # Drop inherited cloud configuration but retain explicit desktop enrollment.
+    configure_local_environment(values, Settings.model_fields, data_dir)
+    Settings.model_config['env_file'] = str(source)
     import uvicorn
     uvicorn.run('backend.app.main:app', host='127.0.0.1', port=int(os.environ.get('PORT', '8000')))

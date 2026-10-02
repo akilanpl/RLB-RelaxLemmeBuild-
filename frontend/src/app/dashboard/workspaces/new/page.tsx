@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { AlertCircle, ArrowLeft, GitBranch, Loader2, MonitorUp, Upload, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, FolderOpen, GitBranch, Loader2, MonitorUp, Upload, X } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { apiClient } from '@/lib/api';
 import { entriesFromFileList, sanitizeImportEntries, validateImportPayload, validateZipFile, type ImportEntry } from '@/lib/importFiles';
@@ -12,7 +12,7 @@ import { Input, Textarea } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/cn';
 
-type Source = 'zip' | 'template' | 'empty';
+type Source = 'zip' | 'template' | 'empty' | 'local';
 type ImportKind = 'archive' | 'git' | 'device';
 
 const TEMPLATES = [
@@ -37,6 +37,8 @@ export default function NewWorkspacePage() {
   const [templateId, setTemplateId] = useState('next');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [deviceEntries, setDeviceEntries] = useState<ImportEntry[]>([]);
+  const [localPath, setLocalPath] = useState<string | null>(null);
+  const [isDesktop, setIsDesktop] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -44,6 +46,24 @@ export default function NewWorkspacePage() {
   useEffect(() => {
     if (!authLoading && !isAuthenticated) router.replace('/login');
   }, [authLoading, isAuthenticated, router]);
+
+  useEffect(() => {
+    setIsDesktop(Boolean(window.rlbDesktop));
+  }, []);
+
+  const chooseLocalFolder = async () => {
+    if (!window.rlbDesktop) return;
+    try {
+      const selectedPath = await window.rlbDesktop.selectLocalFolder();
+      if (!selectedPath) return;
+      setLocalPath(selectedPath);
+      const folderName = selectedPath.split(/[\\/]/).filter(Boolean).pop();
+      if (folderName && !name.trim()) setName(folderName);
+      setError(null);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Could not open the folder picker.');
+    }
+  };
 
   const takeFile = (file?: File) => {
     if (!file) return;
@@ -92,8 +112,19 @@ export default function NewWorkspacePage() {
       setError('Provide a public GitHub repository URL and branch.');
       return;
     }
+    if (projectSource === 'local' && !localPath) {
+      setError('Choose a local project folder first.');
+      return;
+    }
     setIsSubmitting(true);
     try {
+      if (projectSource === 'local' && localPath) {
+        const localWorkspace = await apiClient.registerLocalWorkspace(
+          name.trim(), localPath, description.trim() || undefined, user?.id,
+        );
+        router.push(`/dashboard/workspaces/${localWorkspace.id}`);
+        return;
+      }
       const formData = new FormData();
       formData.append('name', name.trim());
       if (description.trim()) formData.append('description', description.trim());
@@ -170,6 +201,34 @@ export default function NewWorkspacePage() {
             }}
           />
         </div>
+
+        {isDesktop && (
+          <button
+            type="button"
+            onClick={() => {
+              setProjectSource('local');
+              setSelectedFile(null);
+              setDeviceEntries([]);
+            }}
+            className={cn(
+              'w-full rounded-[16px] border p-4 text-left transition',
+              projectSource === 'local' ? 'border-coral/50 bg-coral/10' : 'border-cream/10 bg-[#0b1622]/70',
+            )}
+          >
+            <span className="flex items-center gap-2 font-semibold text-cream"><FolderOpen className="h-4 w-4" /> Local project folder</span>
+            <span className="mt-1 block text-sm text-cream/55">Register a folder on this computer and reopen it from your workspace list.</span>
+          </button>
+        )}
+
+        {projectSource === 'local' && (
+          <div className="surface space-y-3 rounded-[18px] p-5">
+            <p className="text-sm text-cream/70">The local runtime scans the selected folder safely, records Git details when available, and refreshes the project snapshot whenever a task is created.</p>
+            <Button type="button" onClick={() => void chooseLocalFolder()} disabled={isSubmitting}>
+              <FolderOpen className="h-4 w-4" /> Choose project folder
+            </Button>
+            {localPath && <p className="break-all text-xs text-cream/55">Selected: {localPath}</p>}
+          </div>
+        )}
 
         {projectSource === 'zip' && (
           <div className="surface space-y-4 rounded-[18px] p-5">

@@ -91,7 +91,14 @@ export default function WorkspaceIdePage() {
       setFiles(filesData);
       setTask(latestTask);
       if (user?.id) {
-        fetchUserWorkspaces(user.id).then(setSiblingWorkspaces).catch(() => setSiblingWorkspaces([]));
+        Promise.all([
+          apiClient.listWorkspaces(user.id).catch(() => []),
+          fetchUserWorkspaces(user.id).catch(() => []),
+        ]).then(([localRuntimeWorkspaces, cloudWorkspaces]) => {
+          const merged = new Map(localRuntimeWorkspaces.map((item) => [item.id, item]));
+          for (const item of cloudWorkspaces) merged.set(item.id, item);
+          setSiblingWorkspaces([...merged.values()]);
+        });
       }
 
       if (latestTask) {
@@ -270,6 +277,12 @@ export default function WorkspaceIdePage() {
       const created = await apiClient.createTask(workspaceId, objective, objective, user?.id);
       setTask(created);
       setPlan(null);
+      if (workspace?.localPath) {
+        const refreshed = await apiClient.getWorkspace(workspaceId, user?.id);
+        setWorkspace(refreshed);
+        const refreshedFiles = await apiClient.listWorkspaceFiles(workspaceId, user?.id);
+        setFiles(refreshedFiles);
+      }
     } catch (err: unknown) {
       setTaskError(err instanceof Error ? err.message : 'Unable to create task');
       throw err;
@@ -392,6 +405,12 @@ export default function WorkspaceIdePage() {
           <Activity className="w-3 h-3" /> {statusLabel === 'ready' ? 'Ready' : statusLabel}
         </span>
         <span className="hidden text-[10px] px-1.5 py-0.5 rounded-[8px] bg-paper/10 text-cream/60 capitalize lg:inline">{envLabel}</span>
+        {workspace.localPath && (
+          <span className="hidden max-w-[220px] truncate text-[10px] text-cream/45 xl:inline"
+            title={`${workspace.localPath}${workspace.gitBranch ? ` · ${workspace.gitBranch}` : ''}${workspace.gitStatus ? ` · ${workspace.gitStatus}` : ''}`}>
+            {workspace.gitBranch ? `${workspace.gitBranch} · ` : ''}{workspace.gitStatus || workspace.localPath}
+          </span>
+        )}
         <div className="ml-auto flex items-center gap-1">
           <button
             type="button"

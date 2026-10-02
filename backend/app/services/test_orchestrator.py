@@ -76,7 +76,8 @@ class TestOrchestrationService:
                 self.repository, self.sandbox, baseline_commands=commands,
                 limits=SandboxLimits(allowed_domains=get_settings().SANDBOX_ALLOWED_DOMAINS)
             ).execute(
-                task_id, executor_run.id, workspace.id, workspace.canonical_root_path, plan
+                task_id, executor_run.id, workspace.id,
+                workspace.local_path or workspace.canonical_root_path, plan
             )
             history = await self.workflow.get_history(task_id, user_id)
             repair_count = sum(item.new_state == WorkflowState.REPAIRING for item in history)

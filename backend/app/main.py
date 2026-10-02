@@ -1,8 +1,10 @@
 """Main FastAPI application entrypoint."""
 
 import asyncio
+import hmac
 import logging
 import os
+from urllib.parse import urlsplit
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,14 +44,27 @@ async def lifespan(app: FastAPI):
     await runtime.start()
     stop = asyncio.Event()
     worker_task = None
+    artifact_cleanup_task = None
     embedded = settings.RUN_EMBEDDED_WORKER
     if embedded is None:
         embedded = settings.ENVIRONMENT in {"development", "test"}
     if services is not None and embedded:
         worker = runtime.worker(os.getenv("WORKER_ID", "local-worker"))
         worker_task = asyncio.create_task(_consume_queue(worker, stop))
+    if settings.ENVIRONMENT in {"staging", "production"}:
+        from backend.app.db.session import get_engine
+        from backend.app.services.artifact_cleanup import cleanup_loop
+        artifact_cleanup_task = asyncio.create_task(
+            cleanup_loop(get_engine(), runtime.workspace.storage, settings)
+        )
     yield
     stop.set()
+    if artifact_cleanup_task is not None:
+        artifact_cleanup_task.cancel()
+        try:
+            await artifact_cleanup_task
+        except asyncio.CancelledError:
+            pass
     if worker_task is not None:
         worker_task.cancel()
         try:
@@ -62,6 +77,17 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     """FastAPI application factory."""
     settings = get_settings()
+    cors_origins = list(settings.BACKEND_CORS_ORIGINS)
+    desktop_origin = settings.RLB_DESKTOP_ORIGIN
+    if desktop_origin:
+        parsed_origin = urlsplit(desktop_origin)
+        if (parsed_origin.scheme != "http"
+                or parsed_origin.hostname not in {"127.0.0.1", "localhost", "::1"}
+                or parsed_origin.username or parsed_origin.password
+                or parsed_origin.path not in {"", "/"}
+                or parsed_origin.query or parsed_origin.fragment):
+            raise ValueError("RLB_DESKTOP_ORIGIN must be an HTTP loopback origin.")
+        cors_origins.append(desktop_origin.rstrip("/"))
 
     app = FastAPI(
         title=settings.PROJECT_NAME,
@@ -71,6 +97,22 @@ def create_app() -> FastAPI:
         redoc_url=f"{settings.API_V1_PREFIX}/redoc",
         lifespan=lifespan,
     )
+
+    @app.middleware("http")
+    async def protect_local_api(request, call_next):
+        token = os.environ.get("RLB_LOCAL_API_TOKEN")
+        if (settings.ENVIRONMENT == "development" and token
+                and request.url.path.startswith(settings.API_V1_PREFIX)
+                and request.method != "OPTIONS"):
+            origin = request.headers.get("origin")
+            if origin and origin.rstrip("/") not in {item.rstrip("/") for item in cors_origins}:
+                from fastapi.responses import JSONResponse
+                return JSONResponse({"detail": "Local API origin is not allowed."}, status_code=403)
+            supplied = request.headers.get("x-rlb-local-token", "")
+            if not hmac.compare_digest(token, supplied):
+                from fastapi.responses import JSONResponse
+                return JSONResponse({"detail": "Local runtime authentication required."}, status_code=401)
+        return await call_next(request)
 
     from fastapi.responses import JSONResponse
     from backend.app.services.task_service import WorkflowConflictError, InvalidWorkflowTransitionError
@@ -85,10 +127,10 @@ def create_app() -> FastAPI:
         return JSONResponse({'detail': 'Workflow state changed or action is not allowed. Reload the task.'}, status_code=409)
 
     # Configure CORS
-    if settings.BACKEND_CORS_ORIGINS:
+    if cors_origins:
         app.add_middleware(
             CORSMiddleware,
-            allow_origins=settings.BACKEND_CORS_ORIGINS,
+            allow_origins=cors_origins,
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],

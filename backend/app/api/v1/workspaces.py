@@ -19,6 +19,7 @@ from backend.app.analysis.types import (
     DetectedTechnology,
     DependencyGraph,
 )
+from backend.app.core.config import get_settings
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 from backend.app.services.runtime import RuntimeRef
@@ -38,6 +39,48 @@ class FileContentResponse(BaseModel):
     content: str
     size_bytes: int
     is_binary: bool = False
+
+
+class LocalWorkspaceRegistration(BaseModel):
+    name: str
+    path: str
+    description: Optional[str] = None
+
+
+@router.post("/local", response_model=Workspace, status_code=status.HTTP_201_CREATED)
+async def register_local_workspace(
+    request: LocalWorkspaceRegistration,
+    auth: AuthenticatedUserContext = Depends(get_authenticated_user),
+):
+    """Register a folder selected by the trusted local desktop shell."""
+    if get_settings().ENVIRONMENT != "development":
+        raise HTTPException(status_code=404, detail="Local workspace registration is only available in the local runtime.")
+    try:
+        return await workspace_service.register_local_workspace(
+            auth.user_id, request.name, request.path, request.description
+        )
+    except (ValueError, ZipValidationError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/{workspace_id}/local/refresh", response_model=Workspace)
+async def refresh_local_workspace(
+    workspace_id: UUID,
+    auth: AuthenticatedUserContext = Depends(get_authenticated_user),
+):
+    if get_settings().ENVIRONMENT != "development":
+        raise HTTPException(status_code=404, detail="Local workspace refresh is only available in the local runtime.")
+    try:
+        workspace = await workspace_service.refresh_local_workspace(workspace_id, auth.user_id)
+        if not workspace.local_path:
+            raise HTTPException(status_code=409, detail="Workspace is not linked to a local folder.")
+        return workspace
+    except WorkspaceNotFoundError:
+        raise HTTPException(status_code=404, detail="Workspace not found.")
+    except WorkspaceAccessDeniedError:
+        raise HTTPException(status_code=403, detail="Access denied.")
+    except (OSError, ValueError, ZipValidationError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.post("", response_model=Workspace, status_code=status.HTTP_201_CREATED)

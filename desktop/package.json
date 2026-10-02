@@ -1,0 +1,37 @@
+{
+  "name": "rlb-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:all": "node build.js",
+    "dist": "node build.js --windows-installer && electron-builder --win --x64"
+  },
+  "devDependencies": {
+    "electron": "^44.5.1",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.rlb.desktop",
+    "productName": "RLB",
+    "directories": {
+      "output": "release"
+    },
+    "files": ["main.js", "preload.js", "package.json"],
+    "extraResources": [
+      {"from": "../frontend/.next/standalone", "to": "frontend/standalone"},
+      {"from": "../frontend/.next/static", "to": "frontend/standalone/.next/static"},
+      {"from": "../dist/rlb-runtime", "to": "backend"}
+    ],
+    "win": {
+      "target": "nsis",
+      "artifactName": "RLB-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

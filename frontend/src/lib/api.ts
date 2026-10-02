@@ -51,6 +51,91 @@ export interface FullHealth {
   database: DatabaseHealth;
 }
 
+export interface RemoteDevice {
+  id: string;
+  name: string;
+  status?: string | null;
+  online?: boolean;
+  is_online?: boolean;
+  last_seen_at?: string | null;
+  platform?: string | null;
+  operating_system?: string | null;
+  version?: string | null;
+  runtime?: Record<string, unknown> | null;
+  task?: Record<string, unknown> | null;
+  current_task?: Record<string, unknown> | null;
+  created_at?: string | null;
+  [key: string]: unknown;
+}
+
+export interface DevicePairCode {
+  pairing_token: string;
+  expires_at: string;
+}
+
+export type DeviceCommandType =
+  | 'START_TASK'
+  | 'PROMPT'
+  | 'PAUSE_TASK'
+  | 'RESUME_TASK'
+  | 'STOP_TASK'
+  | 'DOWNLOAD_ARTIFACT_TO_PC'
+  | 'REQUEST_ARTIFACT_UPLOAD';
+
+export interface CreateDeviceCommandRequest {
+  command_type: DeviceCommandType;
+  payload: Record<string, unknown>;
+  idempotency_key: string;
+  task_id?: string | null;
+  ttl_seconds?: number | null;
+}
+
+export interface DeviceCommand {
+  id: string;
+  device_id?: string;
+  command: string;
+  command_type?: DeviceCommandType | string;
+  status: string;
+  result?: unknown;
+  output?: string | null;
+  error?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  [key: string]: unknown;
+}
+
+export interface DeviceEvent {
+  id: string;
+  device_id?: string;
+  type?: string;
+  event_type?: string;
+  message?: string;
+  data?: unknown;
+  created_at?: string | null;
+  timestamp?: string | null;
+  [key: string]: unknown;
+}
+
+export interface DeviceEventPage {
+  events: DeviceEvent[];
+  cursor: string | null;
+}
+
+export interface DeviceTaskArtifact {
+  id: string;
+  device_id: string;
+  task_id: string;
+  workspace_id: string;
+  name: string;
+  content_type: string;
+  size_bytes: number;
+  sha256: string;
+  created_at: string;
+  expires_at: string;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -116,6 +201,9 @@ export function normalizeWorkspace(item: unknown): Workspace | null {
     totalSizeBytes: Number(row.total_size_bytes ?? row.totalSizeBytes ?? 0),
     currentSnapshotHash: (row.current_snapshot_hash ?? row.currentSnapshotHash) as string | undefined,
     gitRemoteUrl: (row.git_remote_url ?? row.gitRemoteUrl) as string | undefined,
+    localPath: (row.local_path ?? row.localPath) as string | undefined,
+    gitBranch: (row.git_branch ?? row.gitBranch) as string | undefined,
+    gitStatus: (row.git_status ?? row.gitStatus) as string | undefined,
     isArchived: Boolean(row.is_archived ?? row.isArchived ?? false),
     createdAt: String(row.created_at ?? row.createdAt ?? ''),
     updatedAt: String(row.updated_at ?? row.updatedAt ?? ''),
@@ -124,6 +212,65 @@ export function normalizeWorkspace(item: unknown): Workspace | null {
 
 export function normalizeWorkspaceList(value: unknown): Workspace[] {
   return asArray(value).map(normalizeWorkspace).filter((item): item is Workspace => item !== null);
+}
+
+function collectionFrom<T>(value: unknown, key: string): T[] {
+  if (Array.isArray(value)) return value as T[];
+  if (value && typeof value === 'object') {
+    const row = value as Record<string, unknown>;
+    return asArray<T>(row[key] ?? row.items ?? row.data);
+  }
+  return [];
+}
+
+function normalizeDevice(value: unknown): RemoteDevice | null {
+  if (!value || typeof value !== 'object') return null;
+  const row = value as Record<string, unknown>;
+  if (row.id == null) return null;
+  return {
+    ...row,
+    id: String(row.id),
+    name: String(row.name ?? row.hostname ?? 'Unnamed device'),
+    status: (row.status ?? row.connection_status) as string | null | undefined,
+    online: typeof row.online === 'boolean' ? row.online : undefined,
+    is_online: typeof row.is_online === 'boolean' ? row.is_online : undefined,
+  };
+}
+
+function normalizeDeviceCommand(value: unknown): DeviceCommand | null {
+  if (!value || typeof value !== 'object') return null;
+  const row = value as Record<string, unknown>;
+  if (row.id == null) return null;
+  return {
+    ...row,
+    id: String(row.id),
+    command: String(row.command ?? row.command_type ?? 'Command'),
+    command_type: typeof row.command_type === 'string' ? row.command_type : undefined,
+    status: String(row.status ?? 'unknown'),
+  } as DeviceCommand;
+}
+
+function normalizeDeviceEvent(value: unknown): DeviceEvent | null {
+  if (!value || typeof value !== 'object') return null;
+  const row = value as Record<string, unknown>;
+  const id = row.event_id ?? row.id;
+  if (id == null) return null;
+  const payload = row.payload && typeof row.payload === 'object'
+    ? row.payload as Record<string, unknown>
+    : null;
+  return {
+    ...row,
+    id: String(id),
+    type: typeof row.event_type === 'string' ? row.event_type : String(row.type ?? 'event'),
+    event_type: typeof row.event_type === 'string' ? row.event_type : undefined,
+    message: typeof row.message === 'string'
+      ? row.message
+      : typeof payload?.message === 'string'
+        ? payload.message
+        : typeof payload?.workflow_state === 'string'
+          ? payload.workflow_state
+          : undefined,
+  } as DeviceEvent;
 }
 
 async function getAccessToken(): Promise<string | null> {
@@ -154,6 +301,11 @@ class ApiClient {
         Accept: 'application/json',
         ...(options.headers as Record<string, string>),
       };
+
+      if (typeof window !== 'undefined' && window.rlbDesktop) {
+        const localToken = await window.rlbDesktop.getLocalApiToken();
+        if (localToken) headers['X-RLB-Local-Token'] = localToken;
+      }
 
       if (!headers.Authorization && !headers.authorization) {
         const token = await getAccessToken();
@@ -198,6 +350,26 @@ class ApiClient {
     }
   }
 
+  private async requestBlob(endpoint: string): Promise<Blob> {
+    const headers: Record<string, string> = { Accept: 'application/octet-stream' };
+    if (typeof window !== 'undefined' && window.rlbDesktop) {
+      const localToken = await window.rlbDesktop.getLocalApiToken();
+      if (localToken) headers['X-RLB-Local-Token'] = localToken;
+    }
+    const token = await getAccessToken();
+    if (token) headers.Authorization = 'Bearer ' + token;
+    const response = await fetch(`${this.baseUrl}${endpoint}`, { headers });
+    if (!response.ok) {
+      const body = await response.text();
+      throw new ApiError(
+        response.status,
+        response.statusText,
+        parseErrorMessage(body, response.statusText || 'Request failed'),
+      );
+    }
+    return response.blob();
+  }
+
   /**
    * Fetches backend process health.
    */
@@ -233,6 +405,92 @@ class ApiClient {
 
   async getSandboxHealth(): Promise<{ status: string; configured: boolean }> {
     return this.request('/health/sandbox');
+  }
+
+  async listDevices(): Promise<RemoteDevice[]> {
+    return collectionFrom<unknown>(await this.request<unknown>('/api/v1/devices'), 'devices')
+      .map(normalizeDevice)
+      .filter((device): device is RemoteDevice => device !== null);
+  }
+
+  async createDevicePairCode(): Promise<DevicePairCode> {
+    const response = await this.request<Record<string, unknown>>('/api/v1/devices/pairings', {
+      method: 'POST',
+    });
+    const pairingToken = response.pairing_token;
+    const expiresAt = response.expires_at;
+    if (typeof pairingToken !== 'string' || typeof expiresAt !== 'string') {
+      throw new ApiError(502, 'Bad Gateway', 'The server returned an invalid device pair code.');
+    }
+    return { pairing_token: pairingToken, expires_at: expiresAt };
+  }
+
+  async getDevice(deviceId: string): Promise<RemoteDevice> {
+    const device = normalizeDevice(
+      await this.request<unknown>(`/api/v1/devices/${encodeURIComponent(deviceId)}`),
+    );
+    if (!device) throw new ApiError(502, 'Bad Gateway', 'The server returned an invalid device.');
+    return device;
+  }
+
+  async deleteDevice(deviceId: string): Promise<void> {
+    await this.request(`/api/v1/devices/${encodeURIComponent(deviceId)}`, { method: 'DELETE' });
+  }
+
+  async sendDeviceCommand(
+    deviceId: string,
+    commandType: DeviceCommandType,
+    payload?: Record<string, unknown>,
+    options: Pick<CreateDeviceCommandRequest, 'task_id' | 'ttl_seconds'> = {},
+  ): Promise<DeviceCommand> {
+    const body: CreateDeviceCommandRequest = {
+      command_type: commandType,
+      payload: payload ?? {},
+      idempotency_key: globalThis.crypto?.randomUUID?.() ?? `device-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      ...options,
+    };
+    return this.request<DeviceCommand>(`/api/v1/devices/${encodeURIComponent(deviceId)}/commands`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  async listDeviceCommands(deviceId: string): Promise<DeviceCommand[]> {
+    return collectionFrom<DeviceCommand>(
+      await this.request<unknown>(`/api/v1/devices/${encodeURIComponent(deviceId)}/commands`),
+      'commands',
+    ).map(normalizeDeviceCommand).filter((command): command is DeviceCommand => command !== null);
+  }
+
+  async listDeviceEvents(deviceId: string, after?: string | null): Promise<DeviceEventPage> {
+    const query = new URLSearchParams({ limit: '100' });
+    if (after) query.set('after', after);
+    const response = await this.request<unknown>(
+      `/api/v1/devices/${encodeURIComponent(deviceId)}/events?${query.toString()}`,
+    );
+    if (!response || typeof response !== 'object') {
+      throw new ApiError(502, 'Bad Gateway', 'The server returned invalid device events.');
+    }
+    const row = response as { events?: unknown; cursor?: unknown };
+    if (!Array.isArray(row.events) || (row.cursor != null && typeof row.cursor !== 'string')) {
+      throw new ApiError(502, 'Bad Gateway', 'The server returned invalid device events.');
+    }
+    return {
+      events: row.events.map(normalizeDeviceEvent).filter((event): event is DeviceEvent => event !== null),
+      cursor: typeof row.cursor === 'string' ? row.cursor : null,
+    };
+  }
+
+  async listDeviceTaskArtifacts(deviceId: string, taskId: string): Promise<DeviceTaskArtifact[]> {
+    return asArray(await this.request<DeviceTaskArtifact[]>(
+      `/api/v1/devices/${encodeURIComponent(deviceId)}/tasks/${encodeURIComponent(taskId)}/artifacts`,
+    ));
+  }
+
+  async downloadDeviceTaskArtifact(deviceId: string, taskId: string, artifactId: string): Promise<Blob> {
+    return this.requestBlob(
+      `/api/v1/devices/${encodeURIComponent(deviceId)}/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(artifactId)}`,
+    );
   }
 
   async createTask(workspaceId: string, title: string, objective: string, userId?: string): Promise<Task> {
@@ -390,6 +648,34 @@ class ApiClient {
     if (!workspace) {
       throw new ApiError(502, 'Bad Gateway', 'Workspace response was malformed.');
     }
+    return workspace;
+  }
+
+  async registerLocalWorkspace(
+    name: string,
+    path: string,
+    description?: string,
+    userId?: string,
+  ): Promise<Workspace> {
+    const headers: Record<string, string> = {};
+    if (userId) headers['x-user-id'] = userId;
+    const workspace = normalizeWorkspace(await this.request<unknown>('/api/v1/workspaces/local', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ name, path, description: description || null }),
+    }));
+    if (!workspace) throw new ApiError(502, 'Bad Gateway', 'Local workspace response was malformed.');
+    return workspace;
+  }
+
+  async refreshLocalWorkspace(workspaceId: string, userId?: string): Promise<Workspace> {
+    const headers: Record<string, string> = {};
+    if (userId) headers['x-user-id'] = userId;
+    const workspace = normalizeWorkspace(await this.request<unknown>(
+      `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/local/refresh`,
+      { method: 'POST', headers },
+    ));
+    if (!workspace) throw new ApiError(502, 'Bad Gateway', 'Local workspace response was malformed.');
     return workspace;
   }
 

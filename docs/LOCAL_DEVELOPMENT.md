@@ -12,9 +12,9 @@ backend/.venv/bin/python -m pip install -r backend/requirements-dev.txt
 backend/.venv/bin/python -m backend.local
 ```
 
-Reuse an existing virtual environment if present. The local launcher clears inherited application configuration, loads `backend/.env.local` if present or `backend/.env.example` otherwise, and forces development mode. It does not load the existing root `.env`. The default API uses memory repositories, local storage, and an embedded worker. `/health` is available at `http://127.0.0.1:8000/health` without a cloud account.
+Reuse an existing virtual environment if present. The local launcher clears inherited application configuration, loads `backend/.env.local` if present or `backend/.env.example` otherwise, and forces development mode. It does not load the existing root `.env`. Development mode uses SQLite at `storage/local-runtime/rlb.sqlite3`, local filesystem storage, the local Windows execution driver, and an embedded worker. Tasks and queued jobs survive API restarts; an interrupted lease is reclaimed on the next startup. `/health` is available at `http://127.0.0.1:8000/health` without a cloud account.
 
-Never place production credentials in `backend/.env.local` or tests. Optional local integration may use a separate test/staging Supabase and Daytona account. With no sandbox credentials, real execution is unavailable and is never reported as passed. In-memory state does not survive restart. Local tests inject deterministic doubles for providers, queue, storage, and sandbox.
+Never place production credentials in `backend/.env.local` or tests. Optional local integration may use a separate test/staging Supabase and Daytona account. With no sandbox credentials, real execution is unavailable and is never reported as passed. Tests continue to use explicit in-memory doubles unless a persistence test opts into SQLite. Hosted mode continues to use PostgreSQL/Supabase and Daytona.
 
 ## Frontend
 
@@ -60,7 +60,7 @@ RLB_ENV_FILE=backend/.env.example backend/.venv/bin/python -m pytest backend/tes
 
 This includes the real ZIP import, analysis, workflow, approval, versioned promotion, deliberate test failure, bounded repair, review and completion services. Only provider/sandbox infrastructure is replaced with explicit deterministic doubles. Fixtures live in `backend/tests/fixtures/rlb-fixture`; imported project commands are never executed on the test host. Restart checks reconstruct workers/services over retained test repositories; they do not prove process-crash durability of Supabase.
 
-For the local API, the embedded worker shares its in-process queue. Do not start `python -m backend.worker` alongside memory mode: separate processes cannot share an in-memory queue. The standalone worker intentionally requires hosted persistence and queue configuration.
+For the local API, the embedded worker shares the SQLite queue. A separate worker can use the same local database when started with the local environment, but only one worker should claim a given local runtime at a time.
 
 For a credential-free frontend preview:
 
@@ -68,5 +68,50 @@ For a credential-free frontend preview:
 cd /Users/akilan/Downloads/UEE/frontend
 NEXT_PUBLIC_API_URL=http://127.0.0.1:8000 NEXT_PUBLIC_SUPABASE_URL= NEXT_PUBLIC_SUPABASE_ANON_KEY= NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY= WATCHPACK_POLLING=true npm run dev -- --hostname 127.0.0.1 --port 3000
 ```
+
+## Desktop development and Windows packaging
+
+From the repository root, install the optional packaging dependency and
+Electron development dependencies:
+
+```sh
+backend/.venv/bin/python -m pip install -r backend/requirements-desktop.txt
+cd desktop
+npm install
+npm start
+```
+
+The Electron development shell starts the existing local backend and Next.js
+frontend, binds the API to loopback, and moves SQLite, workspace storage, and
+logs under Electron's per-user application-data directory. Closing the window hides it; use the tray
+menu's explicit quit command to stop the processes. The Electron main process
+creates a per-launch local API token and injects it only into the renderer
+preload bridge.
+
+### Registering a local project
+
+In the desktop shell, choose **New workspace → Local project folder** and use
+the native folder picker. The local runtime validates and scans the selected
+folder, excludes symlinks and common generated directories, and stores the
+workspace-to-folder mapping alongside the local SQLite runtime state. The
+workspace remains available after restart; its file snapshot is refreshed from
+the registered folder when a task is created. Human-approved code snapshots
+are then written back inside that folder; if the folder changes while a task is
+in progress, promotion is rejected rather than overwriting those changes. Git
+branch, origin URL, and a working-tree summary are recorded when Git is
+available. The existing task workflow and approval gates are used; local folder
+selection does not create a separate workspace or task system.
+
+On Windows, `npm run dist` builds Next.js standalone output, packages the
+Python sidecar with PyInstaller, and creates an NSIS installer. The packaged
+frontend and runtime launch without separately starting npm or Python. Build
+the installer on Windows; cross-platform Windows packaging is not validated.
+The user configuration file is `config.env` inside Electron's user-data
+directory. SQLite is stored in its `data` subdirectory and logs in `logs`.
+
+Cloud pairing currently exposes the authenticated backend APIs documented in
+`docs/DESKTOP.md`; the desktop pairing UI, event outbox, and artifact
+upload/download are not yet connected end-to-end. Do not place a production
+device token in source control or frontend variables.
 
 Browser login is unavailable in this mode. Automated tests use explicit authenticated test contexts; no browser authentication bypass is installed. Cloud credentials are not required for the deterministic smoke test, but real browser signup/login needs test Supabase, and real task execution needs an AI provider plus Daytona.

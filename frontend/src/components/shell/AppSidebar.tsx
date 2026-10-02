@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
 import {
   FolderGit2,
   LayoutDashboard,
@@ -10,6 +11,7 @@ import {
   PanelLeftOpen,
   Settings,
   Terminal,
+  Cpu,
   Users,
 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
@@ -19,6 +21,8 @@ import { cn } from '@/lib/cn';
 const ITEMS = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, match: 'exact' as const },
   { href: '/dashboard/workspaces', label: 'Workspaces', icon: FolderGit2, match: 'prefix' as const },
+  { href: '/devices', label: 'Devices', icon: Cpu, match: 'prefix' as const },
+  { href: '/device-setup', label: 'Pair this desktop', icon: Cpu, match: 'exact' as const },
   { href: '/terminal', label: 'Sandbox', icon: Terminal, match: 'exact' as const },
   { href: '/loadouts', label: 'Loadouts', icon: Users, match: 'exact' as const },
   { href: '/settings', label: 'Settings', icon: Settings, match: 'exact' as const },
@@ -38,7 +42,10 @@ export function AppSidebar({
   const pathname = usePathname();
   const router = useRouter();
   const { user, profile, isAuthenticated, logout } = useAuth();
+  const [desktopMode, setDesktopMode] = useState(false);
   const displayName = profile?.display_name || user?.user_metadata?.display_name || user?.email?.split('@')[0] || 'You';
+  useEffect(() => setDesktopMode(Boolean(window.rlbDesktop)), []);
+  const items = ITEMS.filter((item) => item.href !== '/device-setup' || desktopMode);
 
   const nav = (
     <aside
@@ -57,7 +64,7 @@ export function AppSidebar({
       </div>
 
       <nav className="flex-1 space-y-1 p-2">
-        {ITEMS.map((item) => {
+        {items.map((item) => {
           const active = item.match === 'prefix'
             ? pathname === item.href || pathname.startsWith(`${item.href}/`)
             : pathname === item.href;

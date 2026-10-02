@@ -31,6 +31,10 @@ class Settings(BaseSettings):
         default=["http://localhost:3000", "http://127.0.0.1:3000"],
         description="Allowed origins for frontend CORS",
     )
+    RLB_DESKTOP_ORIGIN: Optional[str] = Field(
+        default=None,
+        description="Per-launch loopback origin for the packaged desktop frontend",
+    )
 
     # Database & Supabase connection
     DATABASE_URL: Optional[str] = Field(
@@ -81,6 +85,11 @@ class Settings(BaseSettings):
     )
     RUN_EMBEDDED_WORKER: Optional[bool] = None
     WORKER_POLL_SECONDS: float = Field(default=1.0, gt=0)
+    LOCAL_DATA_DIR: str = Field(default="storage/local-runtime")
+    RLB_CONTROL_PLANE_URL: Optional[str] = None
+    RLB_DEVICE_TOKEN: Optional[str] = None
+    RLB_APP_VERSION: str = "0.1.0"
+    RLB_RUNTIME_VERSION: str = "0.1.0"
 
     MAX_WORKFLOW_STAGE_SECONDS: int = Field(default=1800, ge=1, le=7200)
     ARTIFACT_RETENTION_DAYS: int = Field(default=7, ge=1)

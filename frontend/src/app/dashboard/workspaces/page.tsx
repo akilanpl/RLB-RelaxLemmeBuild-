@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { Loader2, Plus } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { fetchUserWorkspaces } from '@/lib/auth';
+import { apiClient } from '@/lib/api';
 import type { Workspace } from '@/types/workspace';
 import { ProjectCard } from '@/components/dashboard/ProjectCard';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -28,7 +29,13 @@ export default function WorkspacesPage() {
     setIsLoadingWorkspaces(true);
     setWorkspaceError(null);
     try {
-      setWorkspaces(await fetchUserWorkspaces(user.id));
+      const [localRuntimeWorkspaces, cloudWorkspaces] = await Promise.all([
+        apiClient.listWorkspaces(user.id).catch(() => []),
+        fetchUserWorkspaces(user.id).catch(() => []),
+      ]);
+      const merged = new Map(localRuntimeWorkspaces.map((workspace) => [workspace.id, workspace]));
+      for (const workspace of cloudWorkspaces) merged.set(workspace.id, workspace);
+      setWorkspaces([...merged.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
     } catch (err: unknown) {
       setWorkspaceError(err instanceof Error ? err.message : 'Failed to fetch workspaces');
     } finally {

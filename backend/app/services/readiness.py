@@ -32,8 +32,9 @@ async def readiness():
                 await conn.execute(text('SELECT artifact_root_path FROM git_snapshots LIMIT 0'))
                 await conn.execute(text('SELECT attempts FROM queue_delivery_attempts LIMIT 0'))
                 await conn.execute(text('SELECT root_path FROM artifact_audit_roots LIMIT 0'))
-                version = (await conn.execute(text('SELECT version FROM rlb_schema_versions WHERE version=5'))).scalar()
-                if version != 5:
+                await conn.execute(text('SELECT object_path FROM rlb_task_artifacts LIMIT 0'))
+                version = (await conn.execute(text('SELECT version FROM rlb_schema_versions WHERE version=8'))).scalar()
+                if version != 8:
                     raise RuntimeError('Missing schema version')
                 result['database'] = 'ready'
                 queues = (await conn.execute(text('SELECT queue_name FROM pgmq.list_queues()'))).scalars().all()

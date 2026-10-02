@@ -15,6 +15,25 @@
 
 ---
 
+## Product architecture
+
+RLB's intended primary mode is a **local Windows runtime with web remote
+control**. The desktop owns project files, task execution, agent workflows,
+tests, and durable local state. The authenticated cloud control plane stores
+device registrations and durable remote commands; the Windows runtime connects
+outbound and continues local work while offline. Hosted Daytona/Railway
+execution remains an optional mode, not a prerequisite for local development.
+
+The repository now includes persistent local tasks and queue state, a guarded
+local process driver, a desktop shell, authenticated device pairing and command
+records, and the remote Devices UI. Desktop pairing enrollment uses
+OS-protected credential storage; complete event/artifact synchronization, local
+workspace registration, and the standalone Windows installer still require
+additional implementation and validation. See [Windows desktop and remote
+control](docs/DESKTOP.md) for the implemented flow and known limits.
+
+---
+
 ## One more thing about AI coding tools.
 
 Every AI coding tool today makes the same bet:

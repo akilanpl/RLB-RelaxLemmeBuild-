@@ -1,5 +1,6 @@
 """Coder orchestration, deterministic proposals, and atomic approval application."""
 
+import asyncio
 import difflib
 import hashlib
 import json
@@ -250,7 +251,7 @@ class CoderService:
                 latest_ws.total_size_bytes = synced.total_size_bytes
                 return {'proposal_id': proposal.id, 'new_snapshot_hash': synced.current_snapshot_hash,
                         'files_applied': len(staged), 'is_successful': True}
-            except BaseException:
+            except BaseException as exc:
                 _MEMORY_WORKSPACES[ws.id] = previous
                 _MEMORY_FILES[ws.id] = previous_files
                 # Only the unpublished snapshot is eligible for cleanup.
@@ -258,6 +259,21 @@ class CoderService:
                     await storage.delete_directory(root)
                 except Exception:
                     pass
+                if ws.local_path and not isinstance(exc, asyncio.CancelledError):
+                    try:
+                        failed_task = await self.workflow.get_task(task.id, user_id)
+                        if failed_task.status == WorkflowState.PROMOTING:
+                            await self.workflow.transition(
+                                task.id,
+                                WorkflowState.FAILED,
+                                ActorType.SYSTEM,
+                                None,
+                                "Approved local snapshot could not be safely synchronized",
+                                {"error": str(exc)[:500]},
+                                expected_version=failed_task.version,
+                            )
+                    except Exception:
+                        pass
                 raise
 
     async def request_revision(self, proposal_id: UUID, user_id: UUID, feedback: str):
