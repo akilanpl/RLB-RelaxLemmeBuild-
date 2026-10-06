@@ -870,6 +870,8 @@ class WorkspaceService:
             raise ZipValidationError("Empty or directory-only paths are not importable as files.")
         if raw_name.startswith("/") or (len(raw_name) > 1 and raw_name[1] == ":"):
             raise ZipValidationError(f"Absolute paths are prohibited: '{raw_path}'")
+        if ".." in raw_name.split("/"):
+            raise ZipValidationError(f"Path traversal detected: '{raw_path}'")
         if os.name == "nt":
             from backend.app.services.staging_service import _safe_relative_path
             try:
