@@ -22,8 +22,9 @@ TestRunner.__test__ = False
 
 
 @pytest.fixture
-def project_sandbox():
-    root = Path(__file__).resolve().parent / f".local-registration-{uuid.uuid4().hex}"
+def project_sandbox(tmp_path):
+    # Snapshot UUIDs add several path components; keep Windows fixtures short.
+    root = tmp_path / "registration"
     root.mkdir()
     try:
         yield root

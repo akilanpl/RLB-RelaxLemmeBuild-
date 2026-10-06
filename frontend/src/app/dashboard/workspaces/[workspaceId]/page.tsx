@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { apiClient } from '@/lib/api';
+import { runWorkspaceTask } from '@/lib/workspaceRun';
 import { fetchUserWorkspaces } from '@/lib/auth';
 import { entriesFromFileList, sanitizeImportEntries, validateImportPayload, validateZipFile } from '@/lib/importFiles';
 import type { Workspace } from '@/types/workspace';
@@ -58,6 +59,7 @@ export default function WorkspaceIdePage() {
 
   const [task, setTask] = useState<{ id: string; title?: string; objective?: string; status: string } | null>(null);
   const [plan, setPlan] = useState<PersistedPlan | null>(null);
+  const runPending = useRef(false);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [taskError, setTaskError] = useState<string | null>(null);
 
@@ -368,11 +370,28 @@ export default function WorkspaceIdePage() {
   const statusLabel = workspace.status || 'ready';
   const displayName = profile?.display_name || user?.user_metadata?.display_name || user?.email?.split('@')[0] || 'Akilan';
 
-  const onRun = () => {
+  const onRun = async () => {
+    if (runPending.current || busyLabel) return;
+    runPending.current = true;
     setRightOpen(true);
-    if (!task) return;
-    if (task.status === 'ready' || task.status === 'planning') void onRunPlanner();
-    else if (task.status === 'coding') void onRunCoder();
+    setTaskError(null);
+    try {
+      const message = await runWorkspaceTask({
+        task, activePath, createTask: onCreateTask,
+        resumeTask: async () => {
+          setBusyLabel('Queuing task…');
+          await apiClient.resumeTask(task!.id);
+          setTask(await apiClient.getTask(task!.id, user?.id));
+        },
+        showDiff: () => setCenterMode('diff'),
+      });
+      setTaskError(message);
+    } catch (error) {
+      setTaskError(error instanceof Error ? error.message : 'Unable to run task');
+    } finally {
+      runPending.current = false;
+      setBusyLabel(null);
+    }
   };
 
   return (
@@ -415,6 +434,7 @@ export default function WorkspaceIdePage() {
           <button
             type="button"
             onClick={onRun}
+            disabled={Boolean(busyLabel)}
             className="inline-flex items-center gap-1.5 rounded-[10px] bg-coral px-3 py-1.5 text-xs font-semibold text-paper hover:brightness-110"
           >
             <Play className="h-3.5 w-3.5" /> Run

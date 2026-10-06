@@ -114,7 +114,7 @@ jobs:
           npm --prefix frontend run lint
           npm --prefix frontend run typecheck
           npm --prefix desktop run check
-          backend/.venv/Scripts/python.exe -m pytest backend/tests/test_v1_local_end_to_end.py backend/tests/test_desktop_lifecycle.py backend/tests/test_local_runtime.py backend/tests/test_device_connection.py backend/tests/test_device_control.py backend/tests/test_task_artifacts.py -q
+          backend/.venv/Scripts/python.exe -m pytest backend/tests/test_v1_local_end_to_end.py backend/tests/test_windows_process_supervisor.py backend/tests/test_desktop_lifecycle.py backend/tests/test_local_runtime.py backend/tests/test_device_connection.py backend/tests/test_device_control.py backend/tests/test_task_artifacts.py -q
         env:
           RLB_ENV_FILE: backend/.env.example
       - name: Build Windows x64 installer and private toolchains

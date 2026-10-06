@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 
 from backend.app.sandbox.base import BaseSandboxDriver
 from backend.app.sandbox.types import SandboxCommand, SandboxExecutionResult, SandboxLimits
+from backend.app.sandbox.windows_process import supervised_argv
 
 
 class LocalWindowsSandboxDriver(BaseSandboxDriver):
@@ -49,8 +50,9 @@ class LocalWindowsSandboxDriver(BaseSandboxDriver):
             python = os.environ.get("RLB_PROJECT_PYTHON") or shutil.which("python") or shutil.which("python3")
             python_path = None
             if python:
+                setup = [python, "-m", "venv", str(Path(temporary.name) / "python-env")]
                 result = await asyncio.create_subprocess_exec(
-                    python, "-m", "venv", str(Path(temporary.name) / "python-env"),
+                    *(supervised_argv(python, setup) if os.name == "nt" else setup),
                     stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
                     env={**{key: value for key, value in os.environ.items() if key in {"PATH", "SystemRoot", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"}},
                          "HOME": temporary.name, "USERPROFILE": temporary.name,
@@ -90,20 +92,16 @@ class LocalWindowsSandboxDriver(BaseSandboxDriver):
 
     async def _terminate(self, process):
         if os.name == "nt":
-            killer = await asyncio.create_subprocess_exec(
-                shutil.which("taskkill") or str(Path(os.environ.get("SystemRoot", "C:/Windows")) / "System32" / "taskkill.exe"),
-                "/PID", str(process.pid), "/T", "/F",
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-            )
-            await killer.wait()
             if process.returncode is None:
+                # Kill only our supervisor. Windows closes its Job handle and
+                # terminates the entire contained tree, including shell children.
                 process.kill()
         else:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-        await process.wait()
+        await asyncio.wait_for(process.wait(), timeout=2)
 
     async def execute_command(self, sandbox_id: str, command: SandboxCommand) -> SandboxExecutionResult:
         async def discard(stream, chunk):
@@ -125,8 +123,18 @@ class LocalWindowsSandboxDriver(BaseSandboxDriver):
         if sandbox_id in self._python_paths:
             env["PATH"] = self._python_paths[sandbox_id] + os.pathsep + env.get("PATH", "")
         env.update(command.env)
-        process = await asyncio.create_subprocess_shell(
-            command.cmd, cwd=str(cwd), env=env,
+        if os.name == "nt":
+            python_dir = self._python_paths.get(sandbox_id)
+            python = str(Path(python_dir) / "python.exe") if python_dir else None
+            if not python or not Path(python).is_file():
+                raise RuntimeError("A project Python supervisor is required for Windows execution.")
+            launch = asyncio.create_subprocess_exec
+            argv = supervised_argv(python, command.cmd)
+        else:
+            launch = asyncio.create_subprocess_shell
+            argv = [command.cmd]
+        process = await launch(
+            *argv, cwd=str(cwd), env=env,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             start_new_session=os.name != "nt",
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
