@@ -18,6 +18,8 @@ from pathlib import Path
 from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from backend.app.sandbox.windows_process import supervised_argv
 
 
 def free_port():
@@ -178,7 +180,8 @@ with open(sys.argv[2], 'w') as log:
             # No global interpreter or npm lookup is allowed in this check.
             clean_env = {key: value for key, value in env.items() if key in {"SystemRoot", "SYSTEMROOT", "COMSPEC", "WINDIR", "PATHEXT", "TEMP", "TMP"}}
             clean_env["PATH"] = str(tooling / "node")
-            subprocess.run([str(python), "-m", "venv", str(directory / "venv")], env=clean_env, check=True, timeout=60)
+            setup = [str(python), "-m", "venv", str(directory / "venv")]
+            subprocess.run(supervised_argv(str(python), setup), env=clean_env, check=True, timeout=60)
             subprocess.run([str(directory / "venv" / "Scripts" / "python.exe"), "-m", "pip", "--version"], env=clean_env, check=True)
             subprocess.run([str(tooling / "node" / "node.exe"), "--version"], env=clean_env, check=True)
             subprocess.run([str(tooling / "node" / "node.exe"), str(tooling / "node" / "node_modules" / "npm" / "bin" / "npm-cli.js"), "--version"], env=clean_env, check=True)
