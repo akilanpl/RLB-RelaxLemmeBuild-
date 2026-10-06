@@ -5,9 +5,10 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "check": "node --check main.js && node --check preload.js && node --check build.js && node --test tests/*.test.js",
+    "check": "node --check main.js && node --check preload.js && node --check frontend-entry.js && node --check build.js && node --test tests/*.test.js",
     "build:all": "node build.js",
-    "dist": "node build.js --windows-installer && electron-builder --win --x64"
+    "dist": "node build.js --windows-installer && electron-builder --win --x64",
+    "postinstall": "node node_modules/electron/install.js"
   },
   "devDependencies": {
     "electron": "^44.5.1",
@@ -19,20 +20,63 @@
     "directories": {
       "output": "release"
     },
-    "files": ["main.js", "preload.js", "package.json", "tray.png"],
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json",
+      "tray.png"
+    ],
     "extraResources": [
-      {"from": "../frontend/.next/standalone", "to": "frontend/standalone"},
-      {"from": "../frontend/.next/static", "to": "frontend/standalone/.next/static"},
-      {"from": "../dist/rlb-runtime", "to": "backend"}
+      {
+        "from": "../frontend/.next/standalone",
+        "to": "frontend/standalone"
+      },
+      {
+        "from": "../frontend/.next/static",
+        "to": "frontend/standalone/.next/static"
+      },
+      {
+        "from": "../dist/rlb-runtime",
+        "to": "backend"
+      },
+      {
+        "from": "frontend-entry.js",
+        "to": "frontend-entry.js"
+      },
+      {
+        "from": "../frontend/.next/standalone/node_modules",
+        "to": "frontend/standalone/node_modules"
+      },
+      {
+        "from": "../frontend/public",
+        "to": "frontend/standalone/public"
+      }
     ],
     "win": {
       "target": "nsis",
-      "artifactName": "RLB-Setup-${version}.${ext}"
+      "artifactName": "RLB-Setup-${version}.${ext}",
+      "extraResources": [
+        {
+          "from": "../dist/toolchains",
+          "to": "toolchains"
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true
-    }
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": false,
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "RLB",
+      "include": "installer.nsh"
+    },
+    "electronDist": "node_modules/electron/dist"
+  },
+  "description": "RLB \u2014 build on your machine, control from anywhere.",
+  "overrides": {
+    "http-cache-semantics": "^4.3.0"
   }
 }

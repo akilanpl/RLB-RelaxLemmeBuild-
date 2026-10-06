@@ -446,3 +446,10 @@ async def test_terminal_partial_approved_publication_recovery(desktop, tmp_path,
     if external_edit:
         assert runtime.workflow.repository.messages[task.id][-1]["metadata"]["recovery_conflict"]
     await runtime.close()
+
+
+@pytest.mark.parametrize("path", ["CON", "folder/aux.txt", "NUL.py", "COM1/log.txt", "file?.py", "file\x00.py"])
+def test_windows_device_and_invalid_paths_rejected_before_staging(path):
+    from backend.app.services.staging_service import _safe_relative_path
+    with pytest.raises(ValueError):
+        _safe_relative_path(path)

@@ -274,7 +274,7 @@ export default function WorkspaceIdePage() {
     setBusyLabel('Creating task…');
     setTaskError(null);
     try {
-      const created = await apiClient.createTask(workspaceId, objective, objective, user?.id);
+      const created = await apiClient.createTask(workspaceId, objective.trim().split('\n')[0].slice(0, 200), objective, user?.id);
       setTask(created);
       setPlan(null);
       if (workspace?.localPath) {

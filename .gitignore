@@ -47,3 +47,9 @@ yarn-error.log*
 
 # TypeScript build cache
 *.tsbuildinfo
+
+# Desktop release installers and unpacked native packages
+/desktop/release/
+
+# Generated self-hosted Monaco runtime assets
+/frontend/public/monaco/

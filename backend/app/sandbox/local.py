@@ -39,20 +39,29 @@ class LocalWindowsSandboxDriver(BaseSandboxDriver):
                         if entry.is_symlink() or (hasattr(entry, "is_junction") and entry.is_junction()):
                             raise ValueError("Execution snapshots cannot contain filesystem links.")
                 shutil.copytree(source, root)
-            await asyncio.to_thread(copy)
+            copying = asyncio.create_task(asyncio.to_thread(copy))
+            try:
+                await asyncio.shield(copying)
+            except asyncio.CancelledError:
+                await copying
+                raise
             # Python dependencies belong to a disposable environment, not the user's interpreter.
-            python = shutil.which("python") or shutil.which("python3")
+            python = os.environ.get("RLB_PROJECT_PYTHON") or shutil.which("python") or shutil.which("python3")
             python_path = None
             if python:
                 result = await asyncio.create_subprocess_exec(
                     python, "-m", "venv", str(Path(temporary.name) / "python-env"),
                     stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                    env={**{key: value for key, value in os.environ.items() if key in {"PATH", "SystemRoot", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"}},
+                         "HOME": temporary.name, "USERPROFILE": temporary.name,
+                         "TMP": temporary.name, "TEMP": temporary.name, "TMPDIR": temporary.name},
+                    start_new_session=os.name != "nt",
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
                 )
                 try:
                     await asyncio.wait_for(result.wait(), timeout=60)
                 except BaseException:
-                    result.kill()
-                    await result.wait()
+                    await self._terminate(result)
                     raise
                 if result.returncode != 0:
                     raise RuntimeError("Could not create the local Python test environment.")
@@ -82,7 +91,8 @@ class LocalWindowsSandboxDriver(BaseSandboxDriver):
     async def _terminate(self, process):
         if os.name == "nt":
             killer = await asyncio.create_subprocess_exec(
-                "taskkill", "/PID", str(process.pid), "/T", "/F",
+                shutil.which("taskkill") or str(Path(os.environ.get("SystemRoot", "C:/Windows")) / "System32" / "taskkill.exe"),
+                "/PID", str(process.pid), "/T", "/F",
                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
             )
             await killer.wait()
@@ -109,6 +119,9 @@ class LocalWindowsSandboxDriver(BaseSandboxDriver):
         env = {key: value for key, value in os.environ.items() if key in allowed}
         home = self._temporary[sandbox_id].name
         env.update(HOME=home, USERPROFILE=home, TMP=home, TEMP=home, TMPDIR=home, CI="true")
+        tooling = os.environ.get("RLB_PROJECT_NODE_DIR")
+        if tooling:
+            env["PATH"] = tooling + os.pathsep + env.get("PATH", "")
         if sandbox_id in self._python_paths:
             env["PATH"] = self._python_paths[sandbox_id] + os.pathsep + env.get("PATH", "")
         env.update(command.env)
