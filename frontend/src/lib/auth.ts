@@ -145,6 +145,10 @@ export async function fetchUserProfile(userId: string): Promise<UserProfile | nu
 }
 
 export async function fetchUserWorkspaces(userId?: string): Promise<Workspace[]> {
+  if (typeof window !== 'undefined' && window.rlbDesktop) {
+    const { apiClient } = await import('@/lib/api');
+    return apiClient.listWorkspaces(userId);
+  }
   if (isSupabaseConfigured) {
     const client = getSupabaseClient();
     if (client) {

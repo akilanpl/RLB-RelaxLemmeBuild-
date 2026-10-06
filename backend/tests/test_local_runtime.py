@@ -73,7 +73,7 @@ async def test_local_driver_containment_output_and_timeout(tmp_path):
     root.mkdir()
     driver = LocalWindowsSandboxDriver()
     handle = await driver.create_sandbox(uuid4(), str(root), SandboxLimits(timeout_seconds=1))
-    result = await driver.execute_command(handle, SandboxCommand(cmd="printf out; printf err >&2"))
+    result = await driver.execute_command(handle, SandboxCommand(cmd='python -c "import sys; sys.stdout.write(\'out\'); sys.stderr.write(\'err\')"'))
     assert result.exit_code == 0
     assert result.stdout == "out"
     assert result.stderr == "err"
@@ -81,6 +81,6 @@ async def test_local_driver_containment_output_and_timeout(tmp_path):
     with pytest.raises(ValueError, match="escapes"):
         await driver.execute_command(handle, SandboxCommand(cmd="pwd", cwd=".."))
 
-    timeout = await driver.execute_command(handle, SandboxCommand(cmd="sleep 2", timeout_seconds=1))
+    timeout = await driver.execute_command(handle, SandboxCommand(cmd='python -c "import time; time.sleep(2)"', timeout_seconds=1))
     assert timeout.timed_out is True
     await driver.destroy_sandbox(handle)

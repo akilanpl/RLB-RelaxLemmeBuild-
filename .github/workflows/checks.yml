@@ -30,6 +30,7 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
+      - run: npm run test
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run build
@@ -88,3 +89,45 @@ jobs:
           docker exec -i ${{ job.services.postgres.id }} psql -U rlb_test -d rlb_restore -v ON_ERROR_STOP=1 <<'SQL'
           DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM tasks) THEN RAISE EXCEPTION 'Restored task missing'; END IF; END $$;
           SQL
+
+  windows-desktop:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install build dependencies
+        run: |
+          python -m venv backend/.venv
+          backend/.venv/Scripts/python.exe -m pip install -r backend/requirements-desktop.txt -r backend/requirements-dev.txt
+          npm ci --prefix frontend
+          npm ci --prefix desktop
+      - name: Source and Windows local authority checks
+        run: |
+          npm --prefix frontend run test
+          npm --prefix frontend run lint
+          npm --prefix frontend run typecheck
+          npm --prefix desktop run check
+          backend/.venv/Scripts/python.exe -m pytest backend/tests/test_v1_local_end_to_end.py backend/tests/test_desktop_lifecycle.py backend/tests/test_local_runtime.py backend/tests/test_device_connection.py backend/tests/test_device_control.py backend/tests/test_task_artifacts.py -q
+        env:
+          RLB_ENV_FILE: backend/.env.example
+      - name: Build Windows x64 installer and private toolchains
+        run: npm --prefix desktop run dist
+      - name: Install, launch, upgrade and uninstall on disposable Windows user
+        run: |
+          $installer = (Get-ChildItem desktop/release/RLB-Setup-*.exe | Select-Object -First 1).FullName
+          ./desktop/windows_installer_smoke.ps1 -Installer $installer
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: RLB-Windows-V1
+          path: |
+            desktop/release/RLB-Setup-*.exe
+            desktop/release/builder-effective-config.yaml
+          if-no-files-found: warn

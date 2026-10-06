@@ -7,7 +7,10 @@ import { apiClient } from '@/lib/api';
 import type { CodeProposal } from '@/types/diff';
 
 const DiffEditor = dynamic(
-  () => import('@monaco-editor/react').then((module) => module.DiffEditor),
+  () => import('@monaco-editor/react').then((module) => {
+    module.loader.config({ paths: { vs: '/monaco/vs' } });
+    return module.DiffEditor;
+  }),
   { ssr: false, loading: () => <div className="h-72 flex items-center justify-center text-slate-500"><Loader2 className="w-5 h-5 animate-spin mr-2" />Loading diff editor...</div> },
 );
 

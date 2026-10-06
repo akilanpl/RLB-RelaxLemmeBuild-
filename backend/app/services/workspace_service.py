@@ -870,6 +870,12 @@ class WorkspaceService:
             raise ZipValidationError("Empty or directory-only paths are not importable as files.")
         if raw_name.startswith("/") or (len(raw_name) > 1 and raw_name[1] == ":"):
             raise ZipValidationError(f"Absolute paths are prohibited: '{raw_path}'")
+        if os.name == "nt":
+            from backend.app.services.staging_service import _safe_relative_path
+            try:
+                _safe_relative_path(raw_name)
+            except ValueError as exc:
+                raise ZipValidationError("Project path is not safe on Windows.") from exc
         normalized = os.path.normpath(raw_name).replace("\\", "/")
         parts = normalized.split("/")
         if ".." in parts or normalized.startswith("/") or normalized in {".", ""}:

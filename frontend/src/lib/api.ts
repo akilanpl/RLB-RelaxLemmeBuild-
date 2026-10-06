@@ -277,6 +277,7 @@ function normalizeDeviceEvent(value: unknown): DeviceEvent | null {
 }
 
 async function getAccessToken(): Promise<string | null> {
+  if (typeof window !== 'undefined' && window.rlbDesktop) return null;
   try {
     const { getSupabaseClient } = await import('@/lib/supabase');
     const client = getSupabaseClient();
@@ -560,7 +561,7 @@ class ApiClient {
     return this.request(`/api/v1/tasks/${taskId}/approvals`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ approval_type: 'plan_approval', status: approvalStatus, feedback: feedback ?? null }),
+      body: JSON.stringify({ approval_type: 'plan', status: approvalStatus, feedback: feedback ?? null }),
     });
   }
 

@@ -25,6 +25,11 @@ def _safe_relative_path(relative_path: str) -> str:
         raise ValueError("Staging paths must be relative and contained.")
     if any(component.rstrip(" .") != component for component in clean.split("/")):
         raise ValueError("Staging paths must be relative.")
+    reserved = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+    if any(component.split(".", 1)[0].upper() in reserved or
+           any(ord(char) < 32 or char in '\"<>|?*' for char in component)
+           for component in clean.split("/")):
+        raise ValueError("Staging path is not safe on Windows.")
     normalized = posixpath.normpath(clean)
     if normalized in ("", ".") or normalized == ".." or normalized.startswith("../"):
         raise ValueError("Staging path escapes the workspace.")

@@ -111,7 +111,7 @@ before it exposes privileged renderer IPC.
 
 The packaged sidecar uses `ENVIRONMENT=desktop`: local access is bound to the paired owner and the per-launch local token; the development `x-user-id` path and manual agent-stage endpoints are disabled. The provider encryption key is random and protected by Electron safeStorage. Both server ports are selected at startup and the API URL is obtained through trusted renderer IPC, so a frontend build-time URL cannot route local execution to the cloud.
 
-Tests execute in disposable copies of the immutable approved snapshot. Python dependencies use a disposable virtual environment. Project subprocesses receive a minimal environment without RLB/cloud/provider credentials, bounded output, and process-tree cancellation/timeout cleanup. This existing local process driver runs with the Windows user's OS permissions; it is not an OS container or a network firewall. The project's Git/Node/Python toolchains must be installed as needed. Hosted Daytona isolation remains optional.
+Tests execute in disposable copies of the immutable approved snapshot. Python dependencies use a disposable virtual environment. Project subprocesses receive a minimal environment without RLB/cloud/provider credentials, bounded output, and process-tree cancellation/timeout cleanup. This existing local process driver runs with the Windows user's OS permissions; it is not an OS container or a network firewall. The Windows package includes Python (with venv/ensurepip) and Node/npm for project checks; users do not install these to start RLB. A project requiring other tools, including Git commands, must supply those tools. Hosted Daytona isolation remains optional.
 
 ## Remaining validation and limitations
 
@@ -124,3 +124,11 @@ Tests execute in disposable copies of the immutable approved snapshot. Python de
   not been validated from this macOS build host.
 
 Stop cancels test process trees and prevents subsequent stages. An approved file publication already in progress finishes its durable publication boundary before stop takes effect; recovery completes that approved publication without starting tests for a stopped task. External edits that conflict with a recovery are preserved and reported in task messages. Interrupted test executions retain cancelled evidence.
+
+## Windows installation lifecycle
+
+The per-user NSIS installer preserves application data and registered project folders on upgrade and uninstall. Upgrade requests authenticated application shutdown through the existing instance, waits for its processes, and aborts instead of killing an active approved publication. Uninstall removes login startup entries. The app uses protected, crash-safe credential writes. Runtime readiness verifies the launch instance and live worker, and child failures have bounded restart attempts. Orphaned sidecars stop after Electron disappears.
+
+Monaco code/diff editor assets ship locally; opening a review does not require a CDN. The standalone server's dependencies and public assets are explicit package resources. Release child environments exclude development credentials.
+
+The Windows CI job builds the actual Windows sidecar/toolchains and installer, then runs an install/first-launch/background-close/upgrade/uninstall smoke check in a disposable CI profile. That job has been added but was not run on this macOS host. See WINDOWS_V1_VERIFICATION.md for current evidence.

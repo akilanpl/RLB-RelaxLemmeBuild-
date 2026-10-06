@@ -5,7 +5,10 @@ import { useState } from 'react';
 import { Loader2, X } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
-const MonacoEditor = dynamic(() => import('@monaco-editor/react'), {
+const MonacoEditor = dynamic(() => import('@monaco-editor/react').then((module) => {
+  module.loader.config({ paths: { vs: '/monaco/vs' } });
+  return module.default;
+}), {
   ssr: false,
   loading: () => (
     <div className="h-full flex items-center justify-center text-cream/40 text-xs">

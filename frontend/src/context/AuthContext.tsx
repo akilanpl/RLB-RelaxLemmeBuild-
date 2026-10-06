@@ -91,7 +91,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let active = true;
     setProfile(null);
-    if (user?.id) {
+    if (user?.id && !window.rlbDesktop) {
       void fetchUserProfile(user.id).then((value) => {
         if (active) setProfile(value);
       }).catch(() => {

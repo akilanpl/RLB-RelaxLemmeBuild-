@@ -17,6 +17,7 @@ export type TaskStatus =
   | 'promoting'
   | 'test_planning'
   | 'test_executing'
+  | 'repairing'
   | 'reviewing'
   | 'completed'
   | 'cancelled'
