@@ -7,6 +7,16 @@ if (process.argv.includes('--windows-installer') && (process.platform !== 'win32
   process.exit(1);
 }
 
+// Electron 44 exposes install.js explicitly; npm ci alone installs no binary.
+// Ensure the exact locked distribution exists even when lifecycle scripts were skipped.
+const electronInstall = spawnSync(process.execPath, [require.resolve('electron/install.js')], {
+  cwd: __dirname, stdio: 'inherit',
+});
+if (electronInstall.error) throw electronInstall.error;
+if (electronInstall.status !== 0) process.exit(electronInstall.status || 1);
+const electronBinary = require('electron');
+if (!fs.existsSync(electronBinary)) throw new Error('Electron installer did not provide its executable.');
+
 const root = path.resolve(__dirname, '..');
 const frontend = spawnSync('npm', ['run', 'build'], {
   cwd: path.join(root, 'frontend'),
