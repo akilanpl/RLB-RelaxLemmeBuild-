@@ -20,7 +20,7 @@ async def readiness():
     if settings.ENVIRONMENT not in {'staging', 'production'}:
         return {'status': 'local', 'database': 'optional', 'queue': 'local', 'storage': 'local',
                 'worker': 'embedded' if settings.RUN_EMBEDDED_WORKER is not False else 'disabled',
-                'sandbox': 'configured' if settings.DAYTONA_API_KEY and settings.DAYTONA_SANDBOX_IMAGE else 'unavailable',
+                'sandbox': 'local_process',
                 'provider': 'per-user configuration required'}
     result = {'database': 'unavailable', 'queue': 'unavailable', 'worker': 'unavailable', 'storage': 'unavailable',
               'sandbox': 'worker-managed; requires execution validation', 'provider': 'per-user configuration required'}
@@ -37,10 +37,14 @@ async def readiness():
                 if version != 8:
                     raise RuntimeError('Missing schema version')
                 result['database'] = 'ready'
-                queues = (await conn.execute(text('SELECT queue_name FROM pgmq.list_queues()'))).scalars().all()
-                result['queue'] = 'ready' if settings.SUPABASE_QUEUE_NAME in queues else 'missing'
-                alive = (await conn.execute(text("SELECT EXISTS(SELECT 1 FROM worker_heartbeats WHERE seen_at > now() - interval '90 seconds')"))).scalar()
-                result['worker'] = 'ready' if alive else 'stale'
+                if settings.RLB_CONTROL_PLANE_ONLY:
+                    result['queue'] = 'device_commands'
+                    result['worker'] = 'paired_local_runtime'
+                else:
+                    queues = (await conn.execute(text('SELECT queue_name FROM pgmq.list_queues()'))).scalars().all()
+                    result['queue'] = 'ready' if settings.SUPABASE_QUEUE_NAME in queues else 'missing'
+                    alive = (await conn.execute(text("SELECT EXISTS(SELECT 1 FROM worker_heartbeats WHERE seen_at > now() - interval '90 seconds')"))).scalar()
+                    result['worker'] = 'ready' if alive else 'stale'
     except Exception:
         pass  # Response intentionally contains no exception text or connection data.
     try:
@@ -52,5 +56,6 @@ async def readiness():
             result['storage'] = 'ready' if bucket.get('public') is False else 'unsafe_public_bucket'
     except Exception:
         pass
-    result['status'] = 'ready' if all(result[key] == 'ready' for key in ('database', 'queue', 'worker', 'storage')) else 'not_ready'
+    required = ('database', 'storage') if settings.RLB_CONTROL_PLANE_ONLY else ('database', 'queue', 'worker', 'storage')
+    result['status'] = 'ready' if all(result[key] == 'ready' for key in required) else 'not_ready'
     return result

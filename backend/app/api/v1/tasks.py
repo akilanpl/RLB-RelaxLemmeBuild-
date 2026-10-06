@@ -202,7 +202,7 @@ async def get_agent_runs(task_id: UUID, auth: AuthenticatedUserContext = Depends
 @router.post("/{task_id}/review")
 async def run_reviewer(task_id: UUID, auth: AuthenticatedUserContext = Depends(get_authenticated_user)):
     """Run the read-only final review; only orchestration may complete the task."""
-    if get_settings().ENVIRONMENT in {"staging", "production"}:
+    if get_settings().ENVIRONMENT in {"staging", "production", "desktop"}:
         raise HTTPException(status_code=409, detail="Execution is owned by the durable worker. Use the resume endpoint.")
     try:
         return await reviewer_service.execute(task_id, auth.user_id)
@@ -231,7 +231,7 @@ async def get_reviewer_report(task_id: UUID, auth: AuthenticatedUserContext = De
 @router.post("/{task_id}/planner")
 async def run_planner(task_id: UUID, request: PlannerRequest = PlannerRequest(),
                       auth: AuthenticatedUserContext = Depends(get_authenticated_user)):
-    if get_settings().ENVIRONMENT in {"staging", "production"}:
+    if get_settings().ENVIRONMENT in {"staging", "production", "desktop"}:
         raise HTTPException(status_code=409, detail="Execution is owned by the durable worker. Use the resume endpoint.")
     try:
         task = await workflow_engine.get_task(task_id, auth.user_id)
@@ -290,7 +290,7 @@ async def get_test_plan(task_id: UUID, auth: AuthenticatedUserContext = Depends(
 async def create_test_plan(
     task_id: UUID, auth: AuthenticatedUserContext = Depends(get_authenticated_user)
 ):
-    if get_settings().ENVIRONMENT in {"staging", "production"}:
+    if get_settings().ENVIRONMENT in {"staging", "production", "desktop"}:
         raise HTTPException(status_code=409, detail="Execution is owned by the durable worker. Use the resume endpoint.")
     try:
         task = await workflow_engine.get_task(task_id, auth.user_id)
@@ -340,7 +340,7 @@ async def get_test_executions(task_id: UUID, auth: AuthenticatedUserContext = De
 @router.post("/{task_id}/coder")
 async def run_coder(task_id: UUID, request: CoderRequest = CoderRequest(),
                     auth: AuthenticatedUserContext = Depends(get_authenticated_user)):
-    if get_settings().ENVIRONMENT in {"staging", "production"}:
+    if get_settings().ENVIRONMENT in {"staging", "production", "desktop"}:
         raise HTTPException(status_code=409, detail="Execution is owned by the durable worker. Use the resume endpoint.")
     try:
         proposal = await coder_service.execute(

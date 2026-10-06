@@ -38,7 +38,7 @@ class TestArchitectService:
 
     async def create_plan(
         self, task_id: UUID, agent_run_id: UUID, objective: str,
-        affected_files: Iterable[str] = (), context=None,
+        affected_files: Iterable[str] = (), context=None, execution_platform="posix",
     ) -> TestPlan:
         AgentPermissionGatekeeper.assert_tool_permitted(
             AgentRole.TEST_ARCHITECT, "submit_test_plan"
@@ -59,7 +59,7 @@ class TestArchitectService:
                     "Each case must have category (functional, regression, edge_case, security, integration), title, "
                     "description, expected_result, and test_code. test_code must be an executable shell "
                     "command that asserts behavior and exits nonzero on failure. Commands run only in "
-                    "an isolated disposable sandbox at /workspace. Do not return echo-only or manual "
+                    f"the project working directory using {execution_platform} shell syntax. Do not return echo-only or manual "
                     "checks. Do not assume secrets or external services exist. Use the supplied source "
                     "and approved plan. Never change mandatory baseline checks."),
                 user_prompt=redact_secrets(json.dumps({"objective": objective, "context": context or {}}))[:180000],

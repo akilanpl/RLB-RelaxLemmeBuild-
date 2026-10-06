@@ -5,6 +5,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "check": "node --check main.js && node --check preload.js && node --check build.js && node --test tests/*.test.js",
     "build:all": "node build.js",
     "dist": "node build.js --windows-installer && electron-builder --win --x64"
   },
@@ -18,7 +19,7 @@
     "directories": {
       "output": "release"
     },
-    "files": ["main.js", "preload.js", "package.json"],
+    "files": ["main.js", "preload.js", "package.json", "tray.png"],
     "extraResources": [
       {"from": "../frontend/.next/standalone", "to": "frontend/standalone"},
       {"from": "../frontend/.next/static", "to": "frontend/standalone/.next/static"},

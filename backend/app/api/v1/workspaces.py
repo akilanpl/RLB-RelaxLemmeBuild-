@@ -53,7 +53,7 @@ async def register_local_workspace(
     auth: AuthenticatedUserContext = Depends(get_authenticated_user),
 ):
     """Register a folder selected by the trusted local desktop shell."""
-    if get_settings().ENVIRONMENT not in {"development", "test"}:
+    if get_settings().ENVIRONMENT not in {"development", "desktop", "test"}:
         raise HTTPException(status_code=404, detail="Local workspace registration is only available in the local runtime.")
     try:
         return await workspace_service.register_local_workspace(
@@ -68,7 +68,7 @@ async def refresh_local_workspace(
     workspace_id: UUID,
     auth: AuthenticatedUserContext = Depends(get_authenticated_user),
 ):
-    if get_settings().ENVIRONMENT not in {"development", "test"}:
+    if get_settings().ENVIRONMENT not in {"development", "desktop", "test"}:
         raise HTTPException(status_code=404, detail="Local workspace refresh is only available in the local runtime.")
     try:
         workspace = await workspace_service.refresh_local_workspace(workspace_id, auth.user_id)

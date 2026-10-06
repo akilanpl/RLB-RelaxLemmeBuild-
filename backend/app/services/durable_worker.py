@@ -85,7 +85,7 @@ class DurableTaskWorker:
     async def _run_with_heartbeat(self, handler, job):
         async def renew():
             while True:
-                await asyncio.sleep(max(0.01, self.queue.lease_seconds / 3))
+                await asyncio.sleep(min(0.25, max(0.01, self.queue.lease_seconds / 3)))
                 await self.queue.heartbeat(job.id, self.worker_id)
                 task = await self.queue.workflow.get_task(job.task_id, job.user_id)
                 if task.status == WorkflowState.CANCELLED:
@@ -157,12 +157,14 @@ def build_default_worker(queue: JobQueue, worker_id: str, planner, coder, review
         except Exception as exc:
             await _mark_failed(workflow, job, exc)
             raise
+        if hasattr(queue, "clear_prompts"):
+            await queue.clear_prompts(job.task_id, len(prompts))
+            if await queue.pending_prompts(job.task_id):
+                return (await workflow.get_task(job.task_id, job.user_id)).status
         task = await workflow.get_task(job.task_id, job.user_id)
         await workflow.transition(task.id, WorkflowState.PLAN_REVIEW, ActorType.SYSTEM, None,
                                   "Planner produced a structured plan",
                                   {"plan_id": str(plan.id)}, expected_version=task.version)
-        if hasattr(queue, "clear_prompts"):
-            await queue.clear_prompts(job.task_id, len(prompts))
         return WorkflowState.PLAN_REVIEW
 
     async def staging_setup(job):
@@ -191,12 +193,14 @@ def build_default_worker(queue: JobQueue, worker_id: str, planner, coder, review
         except Exception as exc:
             await _mark_failed(workflow, job, exc)
             raise
+        if hasattr(queue, "clear_prompts"):
+            await queue.clear_prompts(job.task_id, len(prompts))
+            if await queue.pending_prompts(job.task_id):
+                return (await workflow.get_task(job.task_id, job.user_id)).status
         task = await workflow.get_task(job.task_id, job.user_id)
         await workflow.transition(task.id, WorkflowState.CODE_REVIEW, ActorType.SYSTEM, None,
                                   "Coder produced a structured code proposal",
                                   {"proposal_id": str(proposal.id)}, expected_version=task.version)
-        if hasattr(queue, "clear_prompts"):
-            await queue.clear_prompts(job.task_id, len(prompts))
         return WorkflowState.CODE_REVIEW
 
     async def testing(job):

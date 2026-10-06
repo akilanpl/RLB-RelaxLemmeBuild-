@@ -1,5 +1,8 @@
 """Orchestration boundary for Phase 8 test planning and execution."""
 
+import os
+from backend.app.sandbox.local import LocalWindowsSandboxDriver
+
 from typing import Optional
 from uuid import UUID
 
@@ -28,6 +31,8 @@ class TestOrchestrationService:
         if task.status not in {WorkflowState.TEST_PLANNING, WorkflowState.TEST_EXECUTING}:
             raise ValueError("Task must be in test planning or execution.")
         if task.status == WorkflowState.TEST_PLANNING:
+            if self.runtime_resolver and getattr(self.runtime_resolver, "repository", None):
+                await self.runtime_resolver.hydrate()
             runtime = (self.runtime_resolver.resolve(user_id, task.workspace_id, task.id,
                        AgentRole.TEST_ARCHITECT.value) if self.runtime_resolver else None)
             architect_run = await self.workflow.create_agent_run(
@@ -45,6 +50,7 @@ class TestOrchestrationService:
                     context['approved_changes'] = [p.model_dump(mode='json') for p in proposals[:1]]
                 plan = await TestArchitectService(self.repository, runtime.gateway if runtime else None).create_plan(
                     task_id, architect_run.id, task.objective, context=context,
+                    execution_platform="Windows cmd.exe" if os.name == "nt" and isinstance(self.sandbox, LocalWindowsSandboxDriver) else "POSIX",
                 )
                 await self.workflow.update_agent_run(architect_run.id, ExecutionStatus.SUCCESS)
             except Exception:
@@ -69,15 +75,20 @@ class TestOrchestrationService:
         try:
             from backend.app.services.baseline_commands import discover_baseline_commands
             commands = await discover_baseline_commands(
-                self.workflow.workspace_service.storage, workspace.canonical_root_path)
+                self.workflow.workspace_service.storage, workspace.canonical_root_path,
+                windows=isinstance(self.sandbox, LocalWindowsSandboxDriver) and os.name == "nt")
             from backend.app.core.config import get_settings
             from backend.app.sandbox.types import SandboxLimits
+            execution_root = workspace.canonical_root_path
+            if isinstance(self.sandbox, LocalWindowsSandboxDriver):
+                storage = self.workflow.workspace_service.storage
+                execution_root = str(storage._resolve_safe_path(workspace.canonical_root_path))
             execution = await TestExecutorService(
                 self.repository, self.sandbox, baseline_commands=commands,
                 limits=SandboxLimits(allowed_domains=get_settings().SANDBOX_ALLOWED_DOMAINS)
             ).execute(
                 task_id, executor_run.id, workspace.id,
-                workspace.local_path or workspace.canonical_root_path, plan
+                execution_root, plan
             )
             history = await self.workflow.get_history(task_id, user_id)
             repair_count = sum(item.new_state == WorkflowState.REPAIRING for item in history)

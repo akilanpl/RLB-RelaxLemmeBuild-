@@ -24,8 +24,12 @@ class DeviceConnectionManager:
                  command_handler: CommandHandler, *, client: httpx.AsyncClient | None = None,
                  heartbeat_seconds: int = 20, max_backoff_seconds: int = 60,
                  event_source: Any | None = None):
-        if not api_url.startswith("https://") and not api_url.startswith("http://127.0.0.1"):
-            raise ValueError("Device control must use HTTPS (or loopback during local development).")
+        from urllib.parse import urlsplit
+        parsed = urlsplit(api_url)
+        if (parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"})
+                or not parsed.hostname or parsed.username or parsed.password
+                or parsed.query or parsed.fragment or parsed.path not in {"", "/"}):
+            raise ValueError("Device control must use an HTTPS origin (or a loopback origin during development).")
         self.api_url = api_url.rstrip("/")
         self.device_token = device_token
         self.claim_id = uuid4()
@@ -46,7 +50,7 @@ class DeviceConnectionManager:
     async def close(self) -> None:
         self._stop.set()
         try:
-            await self._request("POST", "/api/v1/device-session/disconnect")
+            await self._request("POST", "/api/v1/device-session/disconnect", timeout=2)
         except (httpx.HTTPError, RuntimeError):
             logger.info("Could not notify cloud about device disconnect; it will expire by heartbeat.")
         await self._store.close()
@@ -153,13 +157,15 @@ class DeviceConnectionManager:
                 result = await self.command_handler(command)
             except Exception as exc:
                 logger.exception("Remote command %s failed locally.", command_id)
+                from backend.app.analysis.sanitizer import redact_secrets
+                message = redact_secrets(str(exc))[:500] if isinstance(exc, (ValueError, PermissionError)) else type(exc).__name__
                 self._receipts[command_id] = {
                     "status": "FAILED",
-                    "error": type(exc).__name__,
+                    "error": message,
                 }
                 await self._store.save("remote_command_receipts", self._receipts)
                 await self._request("POST", f"/api/v1/device-session/commands/{command_id}",
-                                    json={"status": "FAILED", "error": type(exc).__name__})
+                                    json={"status": "FAILED", "error": message})
             else:
                 self._receipts[command_id] = {"status": "SUCCEEDED", "result": result}
                 await self._store.save("remote_command_receipts", self._receipts)
@@ -200,7 +206,7 @@ class DeviceConnectionManager:
                 except asyncio.TimeoutError:
                     pass
                 delay = min(delay * 2, self.max_backoff_seconds)
-            except (httpx.HTTPError, RuntimeError):
+            except (httpx.HTTPError, RuntimeError, ValueError, OSError):
                 logger.warning("Device control connection unavailable; retrying with backoff.")
                 try:
                     await asyncio.wait_for(self._stop.wait(), timeout=delay)

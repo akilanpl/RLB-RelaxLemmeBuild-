@@ -130,6 +130,15 @@ class SQLiteTaskRepository(InMemoryTaskRepository):
             await self._save()
         return result
 
+    async def reserve_ai_call(self, task_id, limit):
+        result = await super().reserve_ai_call(task_id, limit)
+        await self._save()
+        return result
+
+    async def record_provider_call(self, task_id, evidence):
+        await super().record_provider_call(task_id, evidence)
+        await self._save()
+
     async def pending_events(self, limit: int = 200) -> list[dict[str, Any]]:
         pending = sorted(self.event_outbox.values(),
                          key=lambda event: (event["task_id"], event["sequence"]))

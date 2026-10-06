@@ -21,7 +21,9 @@ _MEMORY_STAGING: Dict[UUID, StagingWorkspace] = {}
 
 def _safe_relative_path(relative_path: str) -> str:
     clean = relative_path.replace("\\", "/")
-    if clean.startswith("/") or posixpath.isabs(clean):
+    if clean.startswith("/") or posixpath.isabs(clean) or ":" in clean or ".." in clean.split("/"):
+        raise ValueError("Staging paths must be relative and contained.")
+    if any(component.rstrip(" .") != component for component in clean.split("/")):
         raise ValueError("Staging paths must be relative.")
     normalized = posixpath.normpath(clean)
     if normalized in ("", ".") or normalized == ".." or normalized.startswith("../"):
@@ -39,6 +41,19 @@ class StagingService:
     ):
         self.workspace_service = workspace_service or WorkspaceService(storage)
         self.storage = storage or self.workspace_service.storage
+
+    def enable_persistence(self, path):
+        from backend.app.storage.sqlite import SQLiteStateStore
+        self._store = SQLiteStateStore(path)
+        self._local_staging = {}
+
+    async def load(self):
+        if hasattr(self, "_store"):
+            self._local_staging = await self._store.load("staging", {})
+
+    async def close(self):
+        if hasattr(self, "_store"):
+            await self._store.close()
 
     async def create_staging_workspace(
         self,
@@ -142,6 +157,9 @@ class StagingService:
     async def _persist_staging(self, staging: StagingWorkspace) -> None:
         sessions = get_sessionmaker()
         if sessions is None:
+            if hasattr(self, "_store"):
+                self._local_staging[staging.id] = staging
+                await self._store.save("staging", self._local_staging)
             return
         async with sessions.begin() as session:
             await session.execute(
@@ -174,7 +192,7 @@ class StagingService:
     async def _load_staging(self, staging_id: UUID) -> Optional[StagingWorkspace]:
         sessions = get_sessionmaker()
         if sessions is None:
-            return _MEMORY_STAGING.get(staging_id)
+            return self._local_staging.get(staging_id) if hasattr(self, "_store") else _MEMORY_STAGING.get(staging_id)
         async with sessions() as session:
             row = (
                 await session.execute(

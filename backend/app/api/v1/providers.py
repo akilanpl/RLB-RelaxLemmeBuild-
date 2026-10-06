@@ -39,7 +39,10 @@ _LLM_ROLES = {AgentRole.PLANNER.value, AgentRole.CODER.value, AgentRole.TEST_ARC
 
 def _repository():
     sessions = get_sessionmaker()
-    return PostgresProviderRepository(sessions) if sessions else None
+    if sessions:
+        return PostgresProviderRepository(sessions)
+    from backend.app.services.runtime import get_runtime
+    return get_runtime().agents.resolver.repository
 
 
 class CredentialInput(BaseModel):

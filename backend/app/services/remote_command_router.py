@@ -24,6 +24,59 @@ class RemoteCommandRouter:
         payload = command.get("payload") or {}
         task_id = UUID(str(command["task_id"])) if command.get("task_id") else None
 
+        if command_type in {CommandType.REVIEW_TASK, CommandType.PLAN_DECISION, CommandType.CODE_DECISION}:
+            if task_id is None:
+                raise ValueError("A task is required for review.")
+            task = await self.runtime.workflow.get_task(task_id, user_id)
+            if command_type == CommandType.REVIEW_TASK:
+                connection = self.runtime.device_connection
+                if connection is None:
+                    raise RuntimeError("Artifact connection is unavailable.")
+                import json
+                bundle = {
+                    "task": task.model_dump(mode="json"),
+                    "plans": [p.model_dump(mode="json") for p in await self.runtime.workflow.list_plans(task.id, user_id)],
+                    "proposals": [p.model_dump(mode="json") for p in await self.runtime.agents.coder.proposals.list_by_task(task.id)],
+                    "test_plans": [p.model_dump(mode="json") for p in await self.runtime.testing.list_plans(task.id)],
+                    "test_executions": [e.model_dump(mode="json") for e in await self.runtime.testing.list_executions(task.id)],
+                }
+                report = await self.runtime.agents.reviewer.repository.get_by_task(task.id)
+                bundle["review"] = report.model_dump(mode="json") if report else None
+                artifact = await connection.upload_task_artifact(
+                    task.id, task.workspace_id, f"review-{task.version}.json",
+                    json.dumps(bundle).encode(), "application/json",
+                )
+                return {"task_id": str(task.id), "artifact": artifact, "version": task.version}
+            if task.version != payload.get("expected_version"):
+                raise ValueError("Task changed after review; load its current evidence.")
+            decision = payload.get("status")
+            if decision not in {"approved", "rejected", "revision_requested"}:
+                raise ValueError("Invalid approval decision.")
+            feedback = str(payload.get("feedback") or "").strip() or None
+            if decision == "revision_requested" and not feedback:
+                raise ValueError("Revision feedback is required.")
+            if command_type == CommandType.PLAN_DECISION:
+                plans = await self.runtime.workflow.list_plans(task.id, user_id)
+                if task.status != WorkflowState.PLAN_REVIEW or not plans or str(plans[-1].id) != str(payload.get("plan_id")):
+                    raise ValueError("Plan is not the current approval gate.")
+                await self.runtime.workflow.record_approval(
+                    task.id, user_id, "plan", decision, feedback, defer_setup=True,
+                )
+            else:
+                proposal_id = UUID(str(payload["proposal_id"]))
+                proposal = await self.runtime.agents.coder.proposals.get(proposal_id)
+                if proposal is None or proposal.task_id != task.id or task.status != WorkflowState.CODE_REVIEW:
+                    raise ValueError("Proposal is not the current approval gate.")
+                if decision == "approved":
+                    await self.runtime.agents.coder.request_promotion(proposal.id, user_id)
+                elif decision == "revision_requested":
+                    await self.runtime.agents.coder.request_revision(proposal.id, user_id, feedback)
+                else:
+                    await self.runtime.agents.coder.reject(proposal.id, user_id)
+            if decision in {"approved", "revision_requested"}:
+                await self.runtime.queue.enqueue(task.id, user_id)
+            return {"task_id": str(task.id), "decision": decision}
+
         if command_type == CommandType.START_TASK:
             workspace_id = UUID(str(payload["workspace_id"]))
             workspace = await self.runtime.workflow.workspace_service.get_workspace(workspace_id, user_id)
@@ -46,7 +99,7 @@ class RemoteCommandRouter:
                 raise ValueError("A human approval is required at the current workflow gate.")
             if task.status not in {
                 WorkflowState.READY, WorkflowState.ANALYZING, WorkflowState.PLANNING,
-                WorkflowState.CODING, WorkflowState.REPAIRING, WorkflowState.TEST_EXECUTING,
+                WorkflowState.CODING, WorkflowState.REPAIRING,
             }:
                 raise ValueError("Remote prompts are not supported at the current workflow stage.")
             prompt = str(payload.get("prompt", "")).strip()
@@ -93,7 +146,8 @@ class RemoteCommandRouter:
                         or staging.staging_root_path != expected):
                     raise ValueError("Task staging workspace is unavailable or mismatched.")
                 root = expected
-            elif root != f"workspaces/{task.workspace_id}/canonical":
+            elif (root != f"workspaces/{task.workspace_id}/canonical"
+                  and not root.startswith(f"workspaces/{task.workspace_id}/snapshots/")):
                 raise ValueError("Task workspace root is outside the expected artifact layout.")
             storage_path = f"{root}/{relative_path}"
             storage = self.runtime.workflow.workspace_service.storage

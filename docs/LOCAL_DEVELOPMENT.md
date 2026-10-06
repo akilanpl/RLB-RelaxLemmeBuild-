@@ -14,7 +14,7 @@ backend/.venv/bin/python -m backend.local
 
 Reuse an existing virtual environment if present. The local launcher clears inherited application configuration, loads `backend/.env.local` if present or `backend/.env.example` otherwise, and forces development mode. It does not load the existing root `.env`. Development mode uses SQLite at `storage/local-runtime/rlb.sqlite3`, local filesystem storage, the local Windows execution driver, and an embedded worker. Tasks and queued jobs survive API restarts; an interrupted lease is reclaimed on the next startup. `/health` is available at `http://127.0.0.1:8000/health` without a cloud account.
 
-Never place production credentials in `backend/.env.local` or tests. Optional local integration may use a separate test/staging Supabase and Daytona account. With no sandbox credentials, real execution is unavailable and is never reported as passed. Tests continue to use explicit in-memory doubles unless a persistence test opts into SQLite. Hosted mode continues to use PostgreSQL/Supabase and Daytona.
+Never place production credentials in `backend/.env.local` or tests. Optional local integration may use a separate test/staging Supabase and Daytona account. Local execution uses disposable copies of the approved snapshot and requires the project toolchains (for example Git, Node/npm, and Python) on PATH. No Daytona account is required for local execution; AI stages require configured provider credentials and loadout mappings. Tests continue to use explicit in-memory doubles unless a persistence test opts into SQLite. Hosted mode continues to use PostgreSQL/Supabase and Daytona.
 
 ## Frontend
 
@@ -60,7 +60,7 @@ RLB_ENV_FILE=backend/.env.example backend/.venv/bin/python -m pytest backend/tes
 
 This includes the real ZIP import, analysis, workflow, approval, versioned promotion, deliberate test failure, bounded repair, review and completion services. Only provider/sandbox infrastructure is replaced with explicit deterministic doubles. Fixtures live in `backend/tests/fixtures/rlb-fixture`; imported project commands are never executed on the test host. Restart checks reconstruct workers/services over retained test repositories; they do not prove process-crash durability of Supabase.
 
-For the local API, the embedded worker shares the SQLite queue. A separate worker can use the same local database when started with the local environment, but only one worker should claim a given local runtime at a time.
+For the local API, the embedded worker shares the SQLite queue. Do not start a second process over the same local database: the local queue is checkpointed by one embedded worker. Electron enforces a single application instance.
 
 For a credential-free frontend preview:
 
@@ -106,12 +106,9 @@ On Windows, `npm run dist` builds Next.js standalone output, packages the
 Python sidecar with PyInstaller, and creates an NSIS installer. The packaged
 frontend and runtime launch without separately starting npm or Python. Build
 the installer on Windows; cross-platform Windows packaging is not validated.
-The user configuration file is `config.env` inside Electron's user-data
-directory. SQLite is stored in its `data` subdirectory and logs in `logs`.
+Packaged builds use `ENVIRONMENT=desktop`, ignore development `config.env`, and refuse hosted database/service-role credentials or development identity headers. SQLite is stored in the user-data `data` subdirectory and logs in `logs`. Provider keys are encrypted with a random key protected by Electron safeStorage.
 
-Cloud pairing currently exposes the authenticated backend APIs documented in
-`docs/DESKTOP.md`; the desktop pairing UI, event outbox, and artifact
-upload/download are not yet connected end-to-end. Do not place a production
+Create a one-time pairing token in the signed-in web app and enter it in the desktop setup page. The protected pairing identity gives the desktop local access without a browser JWT refresh or cloud connection. Device commands, event catch-up, private artifacts, and remote approval gates are connected through the existing APIs in `docs/DESKTOP.md`. Do not place a production
 device token in source control or frontend variables.
 
-Browser login is unavailable in this mode. Automated tests use explicit authenticated test contexts; no browser authentication bypass is installed. Cloud credentials are not required for the deterministic smoke test, but real browser signup/login needs test Supabase, and real task execution needs an AI provider plus Daytona.
+The web control plane uses real Supabase signup/login. The desktop uses its securely stored paired account identity and per-launch local API token; it does not use a development login bypass. Local AI calls require an available provider; temporary control-plane loss does not block local workflow execution. An unavailable AI provider is retried within the persisted budget and cannot fabricate passing results.

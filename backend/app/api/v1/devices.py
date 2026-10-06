@@ -1,6 +1,8 @@
 """Authenticated device management and outbound device-session APIs."""
 
 from datetime import datetime
+import httpx
+
 from typing import Any
 from uuid import UUID
 
@@ -81,6 +83,7 @@ class DeviceEventsRequest(BaseModel):
     events: list[DeviceEventRequest] = Field(max_length=200)
 
 class ConfigureConnectionRequest(BaseModel):
+    owner_id: UUID | None = None
     control_plane_url: str = Field(min_length=8, max_length=500)
     device_token: str = Field(min_length=40, max_length=200)
 
@@ -368,13 +371,15 @@ async def device_disconnect(authorization: str | None = Header(None)):
 @router.post("/device-session/configure")
 async def configure_device_connection(request: ConfigureConnectionRequest):
     from backend.app.core.config import get_settings
-    if get_settings().ENVIRONMENT != "development":
+    if get_settings().ENVIRONMENT not in {"development", "desktop"}:
         raise HTTPException(status_code=404, detail="Not found.")
     from backend.app.services.runtime import get_runtime
     try:
         await get_runtime().configure_device_connection(
-            request.control_plane_url, request.device_token,
+            request.control_plane_url, request.device_token, request.owner_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Could not authenticate the device with the control plane.") from exc
     return {"connected": True}

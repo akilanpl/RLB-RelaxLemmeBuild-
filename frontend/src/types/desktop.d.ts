@@ -4,7 +4,8 @@ declare global {
   interface Window {
     rlbDesktop?: {
       platform: string;
-      runtimeUrl: string;
+      getRuntimeUrl: () => Promise<string>;
+      getLocalIdentity: () => Promise<{ userId: string } | null>;
       getLocalApiToken: () => Promise<string>;
       selectLocalFolder: () => Promise<string | null>;
       pairDevice: (request: {

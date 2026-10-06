@@ -41,6 +41,8 @@ class ReviewerService:
         if task.status != WorkflowState.REVIEWING:
             raise ReviewerExecutionError("Task must be in REVIEWING before Reviewer execution.")
         try:
+            if self.runtime_resolver and getattr(self.runtime_resolver, "repository", None):
+                await self.runtime_resolver.hydrate()
             runtime = (self.runtime_resolver.resolve(
                 user_id, task.workspace_id, task.id, AgentRole.REVIEWER.value
             ) if self.runtime_resolver else None)

@@ -41,12 +41,62 @@ class Runtime:
         return build_default_worker(self.queue, worker_id, self.agents.planner,
                                     self.agents.coder, self.agents.reviewer, self.orchestrator)
 
+    def local_resources(self):
+        return (self.workflow.repository, self.queue, self.staging, self.testing,
+                self.agents.coder.proposals, self.agents.reviewer.repository,
+                self.agents.resolver.repository)
+
     async def start(self):
         from backend.app.core.config import get_settings
-        for resource in (self.workflow.repository, self.queue):
+        for resource in self.local_resources():
             load = getattr(resource, "load", None)
             if load:
                 await load()
+        if hasattr(self.workflow.repository, "tasks") and hasattr(self.queue, "load"):
+            from backend.app.workflow.states import WorkflowState
+            from backend.app.services.job_queue import JobStatus
+            for task in self.workflow.repository.tasks.values():
+                if task.status not in {WorkflowState.COMPLETED, WorkflowState.CANCELLED, WorkflowState.FAILED,
+                                       WorkflowState.PLAN_REVIEW, WorkflowState.CODE_REVIEW}:
+                    job = await self.queue.enqueue(task.id, task.user_id)
+                    if job.status == JobStatus.WAITING:
+                        job.status = JobStatus.PENDING
+            await self.queue._save()
+        if hasattr(self.workflow.repository, "tasks") and hasattr(self.workflow.repository, "_store"):
+            from backend.app.models.agent import ExecutionStatus
+            for run in list(self.workflow.repository.runs.values()):
+                if run.status == ExecutionStatus.RUNNING:
+                    await self.workflow.update_agent_run(run.id, ExecutionStatus.CANCELLED,
+                        error_message="Interrupted by runtime restart; recovered work uses a new attempt.")
+            for execution in list(self.testing.executions.values()):
+                if execution.status == ExecutionStatus.RUNNING:
+                    await self.testing.add_execution(execution.model_copy(update={
+                        "status": ExecutionStatus.CANCELLED, "all_passed": False}))
+            for proposal in self.agents.coder.proposals.proposals.values():
+                task = self.workflow.repository.tasks.get(proposal.task_id)
+                if task and task.approved_proposal_id == proposal.id and task.status in {WorkflowState.CANCELLED, WorkflowState.FAILED}:
+                    journal = await self.workflow.repository._store.load("promotion:" + str(proposal.id))
+                    if journal and not journal["published"]:
+                        from backend.app.services.local_promotion import promote_local
+                        staging = await self.staging.get_staging_workspace(proposal.staging_workspace_id, task.user_id)
+                        workspace = await self.staging.workspace_service.get_workspace(task.workspace_id, task.user_id)
+                        from backend.app.services.coder_service import SnapshotConflictError
+                        try:
+                            await promote_local(self.agents.coder, workspace, staging, proposal, task, task.user_id)
+                        except (SnapshotConflictError, OSError) as exc:
+                            # A terminal task's conflicting files must not prevent other
+                            # projects or the control surface from starting.
+                            await self.workflow.repository.add_message(task.id, "system",
+                                "Approved publication recovery needs attention: " + str(exc),
+                                {"proposal_id": str(proposal.id), "recovery_conflict": True})
+                    elif journal and journal["published"]:
+                        proposal.status = "applied"
+                if task and task.approved_proposal_id == proposal.id and task.status in {
+                    WorkflowState.TEST_PLANNING, WorkflowState.TEST_EXECUTING, WorkflowState.REPAIRING,
+                    WorkflowState.REVIEWING, WorkflowState.COMPLETED,
+                }:
+                    proposal.status = "applied"
+            await self.agents.coder.proposals.save()
         if self.devices is not None:
             await self.devices.start()
         if self.agents.resolver.repository:
@@ -71,9 +121,27 @@ class Runtime:
         if self.device_connection is not None:
             await self._start_device_connection()
 
-    async def configure_device_connection(self, api_url: str, device_token: str) -> None:
+    async def configure_device_connection(self, api_url: str, device_token: str, owner_id=None) -> None:
+        from uuid import UUID
         from backend.app.services.device_connection import DeviceConnectionManager
         from backend.app.core.config import get_settings
+        settings = get_settings()
+        candidate = DeviceConnectionManager(
+            api_url, device_token, Path(settings.LOCAL_DATA_DIR) / "device-connection.sqlite3",
+            command_handler=lambda command: None,
+        )
+        try:
+            enrollment = await candidate._request("POST", "/api/v1/device-session/heartbeat", json={
+                "runtime_state": "starting", "current_task_id": None,
+                "app_version": settings.RLB_APP_VERSION, "runtime_version": settings.RLB_RUNTIME_VERSION,
+                "capabilities": {"local_execution": True},
+            })
+            authenticated_owner = UUID(str(enrollment["user_id"]))
+            if owner_id is not None and UUID(str(owner_id)) != authenticated_owner:
+                raise ValueError("Enrollment owner does not match the device credential.")
+        except BaseException:
+            await candidate.close()
+            raise
         if self.device_task is not None:
             self.device_task.cancel()
             try:
@@ -83,11 +151,8 @@ class Runtime:
             self.device_task = None
         if self.device_connection is not None:
             await self.device_connection.close()
-        settings = get_settings()
-        self.device_connection = DeviceConnectionManager(
-            api_url, device_token, Path(settings.LOCAL_DATA_DIR) / "device-connection.sqlite3",
-            command_handler=lambda command: None,
-        )
+        settings.RLB_LOCAL_OWNER_ID = str(authenticated_owner)
+        self.device_connection = candidate
         await self._start_device_connection()
 
     async def _start_device_connection(self) -> None:
@@ -117,12 +182,18 @@ class Runtime:
             runtime_state = "running"
         else:
             runtime_state = "starting"
+        from backend.app.services.workspace_service import _MEMORY_WORKSPACES
+        self.workspace._load_local_registrations()
+        owner = get_settings().RLB_LOCAL_OWNER_ID
+        workspaces = [{"id": str(ws.id), "name": ws.name}
+                      for ws in _MEMORY_WORKSPACES.values()
+                      if ws.local_path and not ws.is_archived and (not owner or str(ws.user_id) == owner)]
         return {
             "runtime_state": runtime_state,
             "current_task_id": current.task_id if current else None,
             "app_version": get_settings().RLB_APP_VERSION,
             "runtime_version": get_settings().RLB_RUNTIME_VERSION,
-            "capabilities": {"local_execution": True, "workflow": True},
+            "capabilities": {"local_execution": True, "workflow": True, "local_workspaces": workspaces},
         }
 
     async def close(self):
@@ -139,7 +210,7 @@ class Runtime:
                 await self.sandbox.client.close()
         if hasattr(self.queue, 'client'):
             await self.queue.client.close()
-        for resource in (self.workflow.repository, self.queue):
+        for resource in self.local_resources():
             close = getattr(resource, "close", None)
             if close:
                 await close()
@@ -180,16 +251,16 @@ def build_runtime(role="api"):
 
     settings = get_settings()
     validate_hosted_configuration(role)
-    running_tests = settings.ENVIRONMENT == "test" or "pytest" in sys.modules
+    running_tests = settings.ENVIRONMENT == "test" or ("pytest" in sys.modules and settings.ENVIRONMENT != "desktop")
     sessions = get_sessionmaker()
     devices = DeviceControlService(
         Path(settings.LOCAL_DATA_DIR) / "rlb.sqlite3"
-        if settings.ENVIRONMENT == "development" and not running_tests else
+        if settings.ENVIRONMENT in {"development", "desktop"} and not running_tests else
         ":memory:" if running_tests else None,
         sessions=sessions if settings.ENVIRONMENT in {"staging", "production"} else None,
     )
     device_connection = None
-    if (settings.ENVIRONMENT == "development"
+    if (settings.ENVIRONMENT in {"development", "desktop"}
             and settings.RLB_CONTROL_PLANE_URL and settings.RLB_DEVICE_TOKEN):
         from backend.app.services.device_connection import DeviceConnectionManager
         device_connection = DeviceConnectionManager(
@@ -199,19 +270,32 @@ def build_runtime(role="api"):
         )
     storage = get_storage_backend(
         Path(settings.LOCAL_DATA_DIR) / "workspace-storage"
-        if settings.ENVIRONMENT == "development" and not running_tests else None
+        if settings.ENVIRONMENT in {"development", "desktop"} and not running_tests else None
     )
     workspace = WorkspaceService(storage)
     staging = StagingService(workspace, storage)
-    local_persistence = settings.ENVIRONMENT == "development" and not running_tests
+    local_persistence = settings.ENVIRONMENT in {"development", "desktop"} and not running_tests
     repository = (
         PostgresTaskRepository(sessions) if sessions else
         SQLiteTaskRepository(Path(settings.LOCAL_DATA_DIR) / "rlb.sqlite3")
         if local_persistence else InMemoryTaskRepository()
     )
     workflow = WorkflowEngine(workspace, repository)
+    workflow.staging_service = staging
     agents = build_agent_services(workflow=workflow, staging=staging)
     testing = PostgresTestingRepository(sessions) if sessions else InMemoryTestingRepository()
+    if local_persistence and sessions is None:
+        from backend.app.repositories.sqlite_local import (
+            SQLiteProposalRepository, SQLiteTestingRepository, SQLiteReviewerRepository,
+            SQLiteProviderRepository,
+        )
+        db_path = Path(settings.LOCAL_DATA_DIR) / "rlb.sqlite3"
+        agents.coder.proposals = SQLiteProposalRepository(db_path)
+        agents.reviewer.repository = SQLiteReviewerRepository(db_path)
+        agents.resolver.repository = SQLiteProviderRepository(db_path)
+        agents.resolver.repository.task_repository = repository
+        testing = SQLiteTestingRepository(db_path)
+        staging.enable_persistence(db_path)
     agents.reviewer.context_builder.proposals = agents.coder.proposals
     agents.reviewer.context_builder.testing = testing
     queue = (SupabaseQueueAdapter(SupabaseQueueClient(get_engine()), settings.SUPABASE_QUEUE_NAME, workflow)

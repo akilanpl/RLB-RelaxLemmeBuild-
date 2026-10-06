@@ -1,10 +1,12 @@
-"""Constrained local process driver used by the Windows runtime."""
-
+"""Local process execution with disposable project copies and bounded evidence."""
 from __future__ import annotations
 
 import asyncio
 import os
 import signal
+import shutil
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -14,18 +16,56 @@ from backend.app.sandbox.types import SandboxCommand, SandboxExecutionResult, Sa
 
 
 class LocalWindowsSandboxDriver(BaseSandboxDriver):
-    """Run commands below a selected project root without exposing a shell API."""
+    """Execute approved project checks locally without modifying approved source."""
 
     def __init__(self):
         self._roots: dict[str, Path] = {}
+        self._temporary: dict[str, tempfile.TemporaryDirectory] = {}
+        self._limits: dict[str, SandboxLimits] = {}
+        self._python_paths: dict[str, str] = {}
 
     async def create_sandbox(self, workspace_id: UUID, staging_root_path: str,
                              limits: SandboxLimits) -> str:
-        root = Path(staging_root_path).resolve()
-        if not root.is_dir():
+        source = Path(staging_root_path).resolve()
+        if not source.is_dir():
             raise ValueError("Execution root must be an existing directory.")
+        temporary = tempfile.TemporaryDirectory(prefix="rlb-execution-")
+        root = Path(temporary.name) / "project"
+        try:
+            def copy():
+                for current, directories, files in os.walk(source, followlinks=False):
+                    for name in [*directories, *files]:
+                        entry = Path(current) / name
+                        if entry.is_symlink() or (hasattr(entry, "is_junction") and entry.is_junction()):
+                            raise ValueError("Execution snapshots cannot contain filesystem links.")
+                shutil.copytree(source, root)
+            await asyncio.to_thread(copy)
+            # Python dependencies belong to a disposable environment, not the user's interpreter.
+            python = shutil.which("python") or shutil.which("python3")
+            python_path = None
+            if python:
+                result = await asyncio.create_subprocess_exec(
+                    python, "-m", "venv", str(Path(temporary.name) / "python-env"),
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                )
+                try:
+                    await asyncio.wait_for(result.wait(), timeout=60)
+                except BaseException:
+                    result.kill()
+                    await result.wait()
+                    raise
+                if result.returncode != 0:
+                    raise RuntimeError("Could not create the local Python test environment.")
+                python_path = str(Path(temporary.name) / "python-env" / ("Scripts" if os.name == "nt" else "bin"))
+        except BaseException:
+            temporary.cleanup()
+            raise
         handle = str(uuid4())
-        self._roots[handle] = root
+        self._temporary[handle] = temporary
+        self._roots[handle] = root.resolve()
+        self._limits[handle] = limits
+        if python_path:
+            self._python_paths[handle] = python_path
         return handle
 
     def _cwd(self, sandbox_id: str, command: SandboxCommand) -> Path:
@@ -39,50 +79,85 @@ class LocalWindowsSandboxDriver(BaseSandboxDriver):
             raise ValueError("Execution directory does not exist.")
         return candidate
 
+    async def _terminate(self, process):
+        if os.name == "nt":
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill", "/PID", str(process.pid), "/T", "/F",
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            )
+            await killer.wait()
+            if process.returncode is None:
+                process.kill()
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        await process.wait()
+
     async def execute_command(self, sandbox_id: str, command: SandboxCommand) -> SandboxExecutionResult:
+        async def discard(stream, chunk):
+            pass
+        return await self.execute_command_observed(sandbox_id, command, discard)
+
+    async def execute_command_observed(self, sandbox_id, command, on_output):
         cwd = self._cwd(sandbox_id, command)
         started = time.monotonic()
-        timeout = command.timeout_seconds or 600
-        creationflags = getattr(asyncio.subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        timeout = min(command.timeout_seconds or 600, self._limits[sandbox_id].timeout_seconds)
+        # Provider, device, database, and desktop credentials must never reach project commands.
+        allowed = {"PATH", "SystemRoot", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "LANG", "LC_ALL"}
+        env = {key: value for key, value in os.environ.items() if key in allowed}
+        home = self._temporary[sandbox_id].name
+        env.update(HOME=home, USERPROFILE=home, TMP=home, TEMP=home, TMPDIR=home, CI="true")
+        if sandbox_id in self._python_paths:
+            env["PATH"] = self._python_paths[sandbox_id] + os.pathsep + env.get("PATH", "")
+        env.update(command.env)
         process = await asyncio.create_subprocess_shell(
-            command.cmd, cwd=str(cwd), env={**os.environ, **command.env},
+            command.cmd, cwd=str(cwd), env=env,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            start_new_session=os.name != "nt", creationflags=creationflags,
+            start_new_session=os.name != "nt",
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
         )
+        output = {"stdout": bytearray(), "stderr": bytearray()}
+
+        async def drain(name, stream):
+            while chunk := await stream.read(8192):
+                remaining = max(0, 64000 - len(output[name]))
+                kept = chunk[:remaining]
+                output[name].extend(kept)
+                if kept:
+                    await on_output(name, kept.decode(errors="replace"))
+
+        readers = [asyncio.create_task(drain("stdout", process.stdout)),
+                   asyncio.create_task(drain("stderr", process.stderr))]
         timed_out = False
         try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+            await asyncio.wait_for(asyncio.gather(process.wait(), *readers), timeout=timeout)
         except asyncio.TimeoutError:
             timed_out = True
-            if os.name == "nt":
-                process.send_signal(signal.CTRL_BREAK_EVENT)
-            else:
-                os.killpg(process.pid, signal.SIGTERM)
-            try:
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=2)
-            except asyncio.TimeoutError:
-                if os.name == "nt":
-                    killer = await asyncio.create_subprocess_exec(
-                        "taskkill", "/PID", str(process.pid), "/T", "/F",
-                        stdout=asyncio.subprocess.DEVNULL,
-                        stderr=asyncio.subprocess.DEVNULL,
-                    )
-                    await killer.wait()
-                else:
-                    os.killpg(process.pid, signal.SIGKILL)
-                stdout, stderr = await process.communicate()
+            await self._terminate(process)
+        except BaseException:
+            await self._terminate(process)
+            raise
+        finally:
+            for reader in readers:
+                reader.cancel()
+            await asyncio.gather(*readers, return_exceptions=True)
         return SandboxExecutionResult(
             exit_code=process.returncode if process.returncode is not None else -1,
-            stdout=stdout.decode(errors="replace"), stderr=stderr.decode(errors="replace"),
+            stdout=output["stdout"].decode(errors="replace"), stderr=output["stderr"].decode(errors="replace"),
             duration_ms=int((time.monotonic() - started) * 1000), timed_out=timed_out,
         )
 
     async def stream_command_output(self, sandbox_id: str, command: SandboxCommand):
         result = await self.execute_command(sandbox_id, command)
-        for line in result.stdout.splitlines():
-            yield line
-        for line in result.stderr.splitlines():
+        for line in (result.stdout + result.stderr).splitlines():
             yield line
 
     async def destroy_sandbox(self, sandbox_id: str) -> None:
         self._roots.pop(sandbox_id, None)
+        self._limits.pop(sandbox_id, None)
+        self._python_paths.pop(sandbox_id, None)
+        temporary = self._temporary.pop(sandbox_id, None)
+        if temporary:
+            await asyncio.to_thread(temporary.cleanup)

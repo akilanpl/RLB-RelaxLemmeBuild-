@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     )
 
     PROJECT_NAME: str = "Cloud AI Software Engineering Workspace"
-    ENVIRONMENT: Literal["development", "test", "staging", "production"] = Field(default="development", description="Runtime environment: development | staging | production")
+    ENVIRONMENT: Literal["development", "desktop", "test", "staging", "production"] = Field(default="development", description="Runtime environment: development | staging | production")
     DEBUG: bool = Field(default=False)
     API_V1_PREFIX: str = "/api/v1"
 
@@ -83,11 +83,13 @@ class Settings(BaseSettings):
         default=None,
         description="32-byte base64 encoded master key for encrypting provider credentials",
     )
+    RLB_CONTROL_PLANE_ONLY: bool = False
     RUN_EMBEDDED_WORKER: Optional[bool] = None
     WORKER_POLL_SECONDS: float = Field(default=1.0, gt=0)
     LOCAL_DATA_DIR: str = Field(default="storage/local-runtime")
     RLB_CONTROL_PLANE_URL: Optional[str] = None
     RLB_DEVICE_TOKEN: Optional[str] = None
+    RLB_LOCAL_OWNER_ID: Optional[str] = None
     RLB_APP_VERSION: str = "0.1.0"
     RLB_RUNTIME_VERSION: str = "0.1.0"
 
@@ -109,6 +111,13 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def require_production_database(self) -> "Settings":
+        if self.ENVIRONMENT == "desktop":
+            if self.DATABASE_URL or self.SUPABASE_SERVICE_ROLE_KEY:
+                raise ValueError("Desktop execution cannot use hosted database or service-role credentials.")
+            if not os.environ.get("RLB_LOCAL_API_TOKEN") or not self.CREDENTIAL_ENCRYPTION_KEY:
+                raise ValueError("Desktop requires a local API token and an encrypted credential key.")
+            if self.RUN_EMBEDDED_WORKER is False or self.DEBUG:
+                raise ValueError("Desktop requires its embedded worker and DEBUG=false.")
         if self.ENVIRONMENT in {"staging", "production"} and not self.DATABASE_URL:
             raise ValueError("DATABASE_URL is required for staging and production.")
         if self.SUPABASE_URL:

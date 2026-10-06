@@ -110,7 +110,10 @@ class LocalJobQueue:
             return task_id in self.paused_tasks
 
     async def add_prompt(self, task_id: UUID, user_id: UUID, prompt: str) -> None:
-        await self.workflow.get_task(task_id, user_id)
+        task = await self.workflow.get_task(task_id, user_id)
+        if task.status not in {WorkflowState.READY, WorkflowState.ANALYZING, WorkflowState.PLANNING,
+                               WorkflowState.CODING, WorkflowState.REPAIRING, WorkflowState.TEST_EXECUTING}:
+            raise ValueError("Prompts cannot bypass a review gate or terminal state.")
         async with self._lock:
             self._prompts.setdefault(task_id, []).append(prompt)
 

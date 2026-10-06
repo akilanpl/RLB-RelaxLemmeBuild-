@@ -75,6 +75,9 @@ export interface DevicePairCode {
 
 export type DeviceCommandType =
   | 'START_TASK'
+  | 'REVIEW_TASK'
+  | 'PLAN_DECISION'
+  | 'CODE_DECISION'
   | 'PROMPT'
   | 'PAUSE_TASK'
   | 'RESUME_TASK'
@@ -317,7 +320,9 @@ class ApiClient {
       if (!isFormData && !headers['Content-Type']) {
         headers['Content-Type'] = 'application/json';
       }
-      const response = await fetch(url, {
+      const requestUrl = typeof window !== 'undefined' && window.rlbDesktop
+        ? `${await window.rlbDesktop.getRuntimeUrl()}${endpoint}` : url;
+      const response = await fetch(requestUrl, {
         ...options,
         headers,
       });
@@ -358,7 +363,9 @@ class ApiClient {
     }
     const token = await getAccessToken();
     if (token) headers.Authorization = 'Bearer ' + token;
-    const response = await fetch(`${this.baseUrl}${endpoint}`, { headers });
+    const baseUrl = typeof window !== 'undefined' && window.rlbDesktop
+      ? await window.rlbDesktop.getRuntimeUrl() : this.baseUrl;
+    const response = await fetch(`${baseUrl}${endpoint}`, { headers });
     if (!response.ok) {
       const body = await response.text();
       throw new ApiError(

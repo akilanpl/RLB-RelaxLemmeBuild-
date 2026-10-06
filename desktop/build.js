@@ -24,6 +24,9 @@ const backend = spawnSync(python, [
   '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir',
   '--name', 'rlb-runtime', '--paths', root, '--collect-submodules', 'backend.app',
   path.join(root, 'backend', 'desktop_runtime.py'),
-], { cwd: root, stdio: 'inherit' });
+], {
+  cwd: root, stdio: 'inherit',
+  env: { ...process.env, PYINSTALLER_CONFIG_DIR: path.join(root, 'build', '.pyinstaller-cache') },
+});
 if (backend.error) throw backend.error;
 process.exitCode = backend.status ?? 1;

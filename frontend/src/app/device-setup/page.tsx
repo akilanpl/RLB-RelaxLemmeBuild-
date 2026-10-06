@@ -30,6 +30,7 @@ export default function DeviceSetupPage() {
       });
       setPairedDevice(result);
       setPairingToken('');
+      window.location.assign('/dashboard');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not pair this device.');
     } finally {

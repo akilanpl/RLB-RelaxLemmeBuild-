@@ -14,10 +14,12 @@ let frontendReady = false;
 let localApiToken;
 let deviceCredential;
 let frontendToken;
+let credentialEncryptionKey;
 
 const development = !app.isPackaged;
 const repositoryRoot = path.resolve(__dirname, '..');
-const runtimeUrl = 'http://127.0.0.1:8000';
+let runtimeUrl;
+let backendPort;
 let frontendPort;
 let frontendUrl;
 const logPath = () => path.join(app.getPath('userData'), 'logs', 'desktop.log');
@@ -35,12 +37,12 @@ function readDeviceCredential() {
   return credential;
 }
 
-function writeDeviceCredential(controlPlaneUrl, deviceToken) {
+function writeDeviceCredential(controlPlaneUrl, deviceToken, ownerId) {
   if (!safeStorage.isEncryptionAvailable()) throw new Error('Operating-system secure credential storage is unavailable.');
   const file = credentialPath();
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temporary = `${file}.tmp`;
-  fs.writeFileSync(temporary, safeStorage.encryptString(JSON.stringify({ controlPlaneUrl, deviceToken })), { mode: 0o600 });
+  fs.writeFileSync(temporary, safeStorage.encryptString(JSON.stringify({ controlPlaneUrl, deviceToken, ownerId })), { mode: 0o600 });
   fs.renameSync(temporary, file);
 }
 
@@ -76,13 +78,24 @@ function assertTrustedDesktopRenderer(event) {
 
 function startBackend() {
   const userData = app.getPath('userData');
+  if (app.isPackaged && fs.existsSync(path.join(userData, 'config.env'))) {
+    // Release settings are supplied by this process; never load development config.
+    log('Desktop release ignores config.env; configure providers in the desktop UI.');
+  }
   const env = {
     ...process.env,
-    ENVIRONMENT: 'development',
+    ENVIRONMENT: 'desktop',
+    DATABASE_URL: '',
+    SUPABASE_SERVICE_ROLE_KEY: '',
+    CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey,
+    RLB_LOCAL_OWNER_ID: deviceCredential?.ownerId || '',
+    RUN_EMBEDDED_WORKER: 'true',
+    RLB_CONTROL_PLANE_ONLY: 'false',
+    DEBUG: 'false',
     RLB_DATA_DIR: path.join(userData, 'data'),
     LOCAL_DATA_DIR: path.join(userData, 'data'),
-    RLB_ENV_FILE: path.join(userData, 'config.env'),
-    PORT: '8000',
+    RLB_ENV_FILE: app.isPackaged ? path.join(userData, 'release-no-env') : path.join(userData, 'config.env'),
+    PORT: String(backendPort),
     RLB_LOCAL_API_TOKEN: localApiToken,
     RLB_CONTROL_PLANE_URL: deviceCredential?.controlPlaneUrl || '',
     RLB_DEVICE_TOKEN: deviceCredential?.deviceToken || '',
@@ -113,7 +126,8 @@ function startFrontend() {
   const env = { ...process.env };
   for (const key of [
     'RLB_DEVICE_TOKEN', 'RLB_LOCAL_API_TOKEN', 'RLB_DESKTOP_FRONTEND_TOKEN',
-    'SUPABASE_SERVICE_ROLE_KEY', 'DATABASE_URL',
+    'SUPABASE_SERVICE_ROLE_KEY', 'DATABASE_URL', 'CREDENTIAL_ENCRYPTION_KEY',
+    'GROQ_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'DAYTONA_API_KEY',
   ]) {
     delete env[key];
   }
@@ -182,14 +196,17 @@ function createWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
+      sandbox: true,
       nodeIntegration: false,
     },
   });
   window.webContents.on('will-navigate', (event, target) => {
-    if (new URL(target).origin !== frontendUrl) event.preventDefault();
+    try {
+      if (new URL(target).origin !== frontendUrl) event.preventDefault();
+    } catch { event.preventDefault(); }
   });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  window.loadURL(frontendUrl);
+  window.loadURL(deviceCredential?.ownerId ? `${frontendUrl}/dashboard` : `${frontendUrl}/device-setup`);
   window.on('close', (event) => {
     if (!quitting) {
       event.preventDefault();
@@ -244,10 +261,25 @@ function showTrayMenu() {
   ]));
 }
 
-app.whenReady().then(async () => {
+const hasInstanceLock = app.requestSingleInstanceLock();
+if (!hasInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => { window?.show(); window?.focus(); });
+}
+
+if (hasInstanceLock) app.whenReady().then(async () => {
   app.setAppUserModelId('com.rlb.desktop');
   localApiToken = randomBytes(32).toString('base64url');
-  ipcMain.handle('get-local-api-token', (event) => {
+  ipcMain.handle('get-runtime-url', (event) => {
+    assertTrustedDesktopRenderer(event);
+    return runtimeUrl;
+  });
+  ipcMain.handle('get-local-identity', (event) => {
+    assertTrustedDesktopRenderer(event);
+    return deviceCredential?.ownerId ? { userId: deviceCredential.ownerId } : null;
+  });
+  ipcMain.handle('get-local-api-token' , (event) => {
     assertTrustedDesktopRenderer(event);
     return localApiToken;
   });
@@ -286,13 +318,15 @@ app.whenReady().then(async () => {
     }
     if (typeof pairingResult.device_token !== 'string' ||
         typeof pairingResult.device?.id !== 'string' ||
-        typeof pairingResult.device?.name !== 'string') {
+        typeof pairingResult.device?.name !== 'string' ||
+        typeof pairingResult.device?.user_id !== 'string') {
       throw new Error('The control plane returned an invalid pairing response.');
     }
-    writeDeviceCredential(controlUrl.origin, pairingResult.device_token);
+    writeDeviceCredential(controlUrl.origin, pairingResult.device_token, pairingResult.device.user_id);
     deviceCredential = {
       controlPlaneUrl: controlUrl.origin,
       deviceToken: pairingResult.device_token,
+      ownerId: pairingResult.device.user_id,
     };
     const configuredResponse = await fetch(`${runtimeUrl}/api/v1/device-session/configure`, {
       method: 'POST',
@@ -303,6 +337,7 @@ app.whenReady().then(async () => {
       body: JSON.stringify({
         control_plane_url: controlUrl.origin,
         device_token: pairingResult.device_token,
+        owner_id: pairingResult.device.user_id,
       }),
     });
     if (!configuredResponse.ok) {
@@ -314,6 +349,15 @@ app.whenReady().then(async () => {
 
   try {
     deviceCredential = readDeviceCredential();
+    if (!safeStorage.isEncryptionAvailable()) throw new Error('Operating-system secure storage is required.');
+    const keyFile = path.join(app.getPath('userData'), 'credentials', 'provider-key.bin');
+    if (fs.existsSync(keyFile)) {
+      credentialEncryptionKey = safeStorage.decryptString(fs.readFileSync(keyFile));
+    } else {
+      credentialEncryptionKey = randomBytes(32).toString('base64url');
+      fs.mkdirSync(path.dirname(keyFile), { recursive: true });
+      fs.writeFileSync(keyFile, safeStorage.encryptString(credentialEncryptionKey), { mode: 0o600 });
+    }
   } catch (error) {
     log(`Could not unlock device credentials: ${error.message}`);
     dialog.showErrorBox('RLB device credentials unavailable', error.message);
@@ -322,6 +366,8 @@ app.whenReady().then(async () => {
   }
 
   try {
+    backendPort = await findAvailablePort();
+    runtimeUrl = `http://127.0.0.1:${backendPort}`;
     frontendPort = await findAvailablePort();
     frontendUrl = `http://127.0.0.1:${frontendPort}`;
     frontendToken = randomBytes(32).toString('base64url');
@@ -334,7 +380,7 @@ app.whenReady().then(async () => {
     if (frontend.exitCode !== null) throw new Error('Desktop frontend stopped before becoming ready.');
     frontendReady = true;
     createWindow();
-    tray = new Tray(nativeImage.createEmpty());
+    tray = new Tray(nativeImage.createFromPath(path.join(__dirname, 'tray.png')));
     tray.setToolTip('RLB');
     tray.on('click', () => { window.show(); window.focus(); });
     showTrayMenu();

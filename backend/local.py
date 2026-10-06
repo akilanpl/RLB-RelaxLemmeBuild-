@@ -10,7 +10,7 @@ from dotenv import dotenv_values
 def configure_local_environment(values, setting_names, data_dir=None):
     runtime_settings = {
         name: os.environ[name]
-        for name in ("RLB_CONTROL_PLANE_URL", "RLB_DEVICE_TOKEN", "RLB_DESKTOP_ORIGIN")
+        for name in ("RLB_CONTROL_PLANE_URL", "RLB_DEVICE_TOKEN", "RLB_DESKTOP_ORIGIN", "CREDENTIAL_ENCRYPTION_KEY", "RLB_LOCAL_OWNER_ID")
         if name in os.environ
     }
     for name in setting_names:
@@ -19,7 +19,12 @@ def configure_local_environment(values, setting_names, data_dir=None):
         if value is not None:
             os.environ[name] = value
     os.environ.update(runtime_settings)
-    os.environ["ENVIRONMENT"] = "development"
+    os.environ["ENVIRONMENT"] = "desktop" if os.environ.get("RLB_LOCAL_API_TOKEN") else "development"
+    if os.environ["ENVIRONMENT"] == "desktop":
+        os.environ["DEBUG"] = "false"
+        os.environ["RUN_EMBEDDED_WORKER"] = "true"
+        os.environ["DATABASE_URL"] = ""
+        os.environ["SUPABASE_SERVICE_ROLE_KEY"] = ""
     if data_dir:
         os.environ["LOCAL_DATA_DIR"] = data_dir
 

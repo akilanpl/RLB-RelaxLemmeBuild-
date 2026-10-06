@@ -15,6 +15,8 @@ def missing_configuration(role='api', settings=None):
 
 def validate_hosted_configuration(role='api'):
     settings = get_settings()
+    if role == "worker" and settings.RLB_CONTROL_PLANE_ONLY:
+        raise RuntimeError("Control-plane-only deployments cannot run hosted execution workers.")
     missing = missing_configuration(role, settings)
     if missing:
         raise RuntimeError('Missing hosted configuration: ' + ', '.join(missing))

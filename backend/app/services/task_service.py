@@ -155,7 +155,8 @@ class WorkflowEngine:
             await self.workspace_service.get_workspace(task.workspace_id, user_id)
         except WorkspaceNotFoundError:
             return
-        staging = await StagingService(self.workspace_service, self.workspace_service.storage).create_staging_workspace(
+        staging_service = getattr(self, "staging_service", None) or StagingService(self.workspace_service, self.workspace_service.storage)
+        staging = await staging_service.create_staging_workspace(
             task.workspace_id, user_id, task.id
         )
         setter = getattr(self.repository, "set_active_staging", None)

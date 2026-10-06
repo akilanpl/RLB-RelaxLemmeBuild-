@@ -42,6 +42,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (window.rlbDesktop) {
+      void window.rlbDesktop.getLocalIdentity().then((identity) => {
+        if (identity) setUser({ id: identity.userId, app_metadata: {}, user_metadata: {}, aud: 'authenticated', created_at: '' });
+        setIsLoading(false);
+      }).catch(() => setIsLoading(false));
+      return;
+    }
     if (!isSupabaseConfigured) {
       setIsLoading(false);
       return;

@@ -289,7 +289,7 @@ async def test_readiness_local_never_claims_cloud_connectivity():
     from backend.app.services.readiness import readiness
     result = await readiness()
     assert result['status'] == 'local'
-    assert result['sandbox'] == 'unavailable'
+    assert result['sandbox'] == 'local_process'
 
 
 @pytest.mark.asyncio
