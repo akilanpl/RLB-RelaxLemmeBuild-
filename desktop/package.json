@@ -29,7 +29,8 @@
     "extraResources": [
       {
         "from": "../frontend/.next/standalone",
-        "to": "frontend/standalone"
+        "to": "frontend/standalone",
+        "filter": ["**/*", "!public{,/**/*}", "!.next/static{,/**/*}"]
       },
       {
         "from": "../frontend/.next/static",

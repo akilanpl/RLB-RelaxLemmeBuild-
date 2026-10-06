@@ -26,6 +26,14 @@ those tests. Workflow and runtime-control states, both human gates, local API
 authentication, credential encryption and cloud control-plane boundaries are
 unchanged. The failure panel no longer attributes every failure to credentials.
 
+Release resources have a single copy owner for standalone public and static
+assets, including when packaged smoke has already populated those directories.
+The broad standalone resource excludes those paths; explicit resource entries
+copy them once. A regression uses electron-builder's actual file matcher to
+verify the exclusions and preserve server files and explicit runtime imports.
+Smoke venv setup uses the Job supervisor and npm receives an isolated temporary
+home, without reading the user's npm configuration.
+
 The real acceptance task has not passed. Plan and code generation were observed
 using a local encrypted Groq configuration with openai/gpt-oss-20b. The user
 confirmed only plan approval: code approval is pending. The observed test file
