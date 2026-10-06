@@ -697,7 +697,7 @@ class WorkspaceService:
         await self._persist_workspace(workspace, file_records)
         return workspace
 
-    async def sync_canonical_metadata(self, workspace: Workspace) -> Workspace:
+    async def sync_canonical_metadata(self, workspace: Workspace, *, publish_local=True) -> Workspace:
         """Rebuild file metadata, counts, size, and snapshot hash from canonical storage."""
         prefix = workspace.canonical_root_path.rstrip("/")
         stored_paths = await self.storage.list_files(prefix)
@@ -727,7 +727,8 @@ class WorkspaceService:
         previous_records = [
             dict(item) for item in _MEMORY_FILES.get(workspace.id, [])
         ]
-        await self._publish_local_snapshot(workspace, file_contents, previous_records)
+        if publish_local:
+            await self._publish_local_snapshot(workspace, file_contents, previous_records)
         previous = {
             item["relative_path"]
             for item in previous_records

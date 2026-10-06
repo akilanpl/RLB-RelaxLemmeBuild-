@@ -9,7 +9,7 @@ The primary product runs RLB's agents and project execution locally on Windows. 
 - [ ] Supabase **production** project. Never use its credentials in local development or tests.
 - [ ] Daytona account, API key, available capacity, and a trusted sandbox image with the Node/Python/build tools supported by your workspaces. Account availability is not yet confirmed.
 - [ ] Vercel project connected to this repository, with Root Directory `frontend`. Assign staging/preview and production environment variables separately.
-- [ ] Railway project with two services: API and worker. Both build from repository root using `backend/Dockerfile`. Select `railway.api.toml` for the API and `railway.worker.toml` for the worker. Keep staging and production services/secrets separate.
+- [ ] For V1 remote control, deploy the Railway API with `RLB_CONTROL_PLANE_ONLY=true`; no hosted execution worker or Daytona account is needed. Optional hosted execution uses two services: API and worker. Both build from repository root using `backend/Dockerfile`. Select `railway.api.toml` for the API and `railway.worker.toml` for the worker. Keep staging and production services/secrets separate.
 - [ ] At least one supported AI provider account. Configure its credential through RLB's provider settings, then map planner, coder, test_architect, and reviewer roles to workers in a loadout. Provider credentials are encrypted server-side. Never put them in frontend variables.
 
 ## Supabase setup
@@ -30,6 +30,7 @@ Configure secrets in Vercel/Railway secret stores. Do not paste secret values in
 | `ENVIRONMENT` | API + worker | `staging` or `production` | Yes |
 | `DEBUG` | API + worker | `false` | Yes |
 | `RUN_EMBEDDED_WORKER` | API + worker | `false` | Yes |
+| `RLB_CONTROL_PLANE_ONLY` | V1 control API | `true`; disables hosted task/project mutations and excludes a hosted worker from readiness | Yes |
 | `DATABASE_URL` | API + worker | Secret `postgresql+asyncpg://…` direct/session connection from corresponding Supabase project | Requires Supabase |
 | `SUPABASE_URL` | API + worker | Public project API URL | Requires Supabase |
 | `SUPABASE_SERVICE_ROLE_KEY` | API + worker | Secret server-only key from corresponding Supabase project | Requires Supabase |
@@ -96,7 +97,7 @@ These checks inspect exported variable presence and print **names only**. They d
 - [ ] Confirm failed tests display failures, sandbox timeouts fail, missing configuration never appears as a passing test, and network limits apply in real Daytona.
 - [ ] Verify private Storage, database role privileges, platform logs, limits, costs, and backup/restore procedures.
 
-Known operational limits: local state is memory-only; a separate local worker cannot consume it. Hosted execution still requires a trusted Daytona image and configured provider API model IDs. Private GitHub import and ongoing Git synchronization are unsupported. Published/audit artifacts are deliberately retained indefinitely.
+Local state is durable SQLite owned by the desktop embedded worker. Hosted execution still requires a trusted Daytona image and configured provider API model IDs. Private GitHub import and ongoing Git synchronization are unsupported. Published/audit artifacts are deliberately retained indefinitely.
 
 ## Provider references
 

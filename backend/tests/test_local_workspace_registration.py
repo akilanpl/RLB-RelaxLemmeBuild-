@@ -376,10 +376,11 @@ async def test_test_executor_receives_exact_registered_local_task_root(project_s
             return SimpleNamespace(id=uuid.uuid4(), all_passed=True)
 
     monkeypatch.setattr(test_orchestrator, "TestExecutorService", CapturingExecutor)
-    orchestrator = TestRunner(workflow, repository, sandbox=object())
+    from backend.app.sandbox.local import LocalWindowsSandboxDriver
+    orchestrator = TestRunner(workflow, repository, sandbox=LocalWindowsSandboxDriver())
     await orchestrator.plan_and_execute(task.id, user_id)
 
     assert captured == {
-        "root": str(project.resolve()),
+        "root": str(workspace_service.storage._resolve_safe_path(workspace.canonical_root_path)),
         "workspace_id": workspace.id,
     }

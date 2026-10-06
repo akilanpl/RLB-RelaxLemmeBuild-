@@ -47,7 +47,7 @@ async def lifespan(app: FastAPI):
     artifact_cleanup_task = None
     embedded = settings.RUN_EMBEDDED_WORKER
     if embedded is None:
-        embedded = settings.ENVIRONMENT in {"development", "test"}
+        embedded = settings.ENVIRONMENT in {"development", "desktop", "test"}
     if services is not None and embedded:
         worker = runtime.worker(os.getenv("WORKER_ID", "local-worker"))
         worker_task = asyncio.create_task(_consume_queue(worker, stop))
@@ -57,6 +57,7 @@ async def lifespan(app: FastAPI):
         artifact_cleanup_task = asyncio.create_task(
             cleanup_loop(get_engine(), runtime.workspace.storage, settings)
         )
+    app.state.worker_task = worker_task
     yield
     stop.set()
     if artifact_cleanup_task is not None:
@@ -77,7 +78,7 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     """FastAPI application factory."""
     settings = get_settings()
-    cors_origins = list(settings.BACKEND_CORS_ORIGINS)
+    cors_origins = [] if settings.ENVIRONMENT == "desktop" else list(settings.BACKEND_CORS_ORIGINS)
     desktop_origin = settings.RLB_DESKTOP_ORIGIN
     if desktop_origin:
         parsed_origin = urlsplit(desktop_origin)
@@ -100,8 +101,13 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def protect_local_api(request, call_next):
+        if (settings.RLB_CONTROL_PLANE_ONLY and request.method not in {"GET", "HEAD", "OPTIONS"}
+                and any(request.url.path.startswith(settings.API_V1_PREFIX + prefix)
+                        for prefix in ("/tasks", "/workspaces", "/providers"))):
+            from fastapi.responses import JSONResponse
+            return JSONResponse({"detail": "Execution and project configuration belong to your paired PC. Use device commands."}, status_code=409)
         token = os.environ.get("RLB_LOCAL_API_TOKEN")
-        if (settings.ENVIRONMENT == "development" and token
+        if (settings.ENVIRONMENT in {"development", "desktop"} and token
                 and request.url.path.startswith(settings.API_V1_PREFIX)
                 and request.method != "OPTIONS"):
             origin = request.headers.get("origin")

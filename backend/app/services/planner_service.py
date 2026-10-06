@@ -40,6 +40,8 @@ class PlannerService:
         if task.status.value != "planning":
             raise PlannerExecutionError("Task must be in PLANNING before Planner execution.")
         try:
+            if self.runtime_resolver and getattr(self.runtime_resolver, "repository", None):
+                await self.runtime_resolver.hydrate()
             runtime = (self.runtime_resolver.resolve(
                 user_id, task.workspace_id, task.id, AgentRole.PLANNER.value
             ) if self.runtime_resolver else None)

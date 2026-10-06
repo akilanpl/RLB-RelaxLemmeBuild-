@@ -109,6 +109,7 @@ async def _decode_and_verify(token: str) -> dict[str, Any]:
 async def get_authenticated_user(
     authorization: Optional[str] = Header(None),
     x_user_id: Optional[str] = Header(None),
+    x_rlb_local_token: Optional[str] = Header(None),
 ) -> AuthenticatedUserContext:
     """Resolve identity from a verified Supabase bearer token.
 
@@ -116,6 +117,15 @@ async def get_authenticated_user(
     compatibility aid. It is never considered in production.
     """
     settings = get_settings()
+    if settings.ENVIRONMENT == "desktop":
+        import os
+        import hmac
+        expected = os.environ.get("RLB_LOCAL_API_TOKEN", "")
+        if not expected or not hmac.compare_digest(expected, x_rlb_local_token or ""):
+            raise HTTPException(status_code=401, detail="Local runtime authentication required.")
+        if not settings.RLB_LOCAL_OWNER_ID:
+            raise HTTPException(status_code=401, detail="Pair this desktop with your account first.")
+        return AuthenticatedUserContext(UUID(settings.RLB_LOCAL_OWNER_ID), {"paired_desktop": True})
     if authorization is not None:
         if not authorization.lower().startswith("bearer "):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required.")

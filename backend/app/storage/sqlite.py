@@ -22,12 +22,17 @@ def _registry():
     )
     from backend.app.services.job_queue import Job, JobStatus
     from backend.app.workflow.states import WorkflowState
-    classes = (
+    from backend.app.models.workflow import CodeProposal, Diff, DiffType
+    from backend.app.models.workspace import StagingWorkspace
+    from backend.app.models.audit import ReviewerReport, ReviewRecommendation
+    from backend.app.models.test import TestPlan, TestCase, TestExecution, BuildResult, FailureReport, FailedCheckDetail, BaselineCheckType, TestCaseCategory
+    classes = (CodeProposal, Diff, StagingWorkspace, ReviewerReport, TestPlan, TestCase,
+               TestExecution, BuildResult, FailureReport, FailedCheckDetail,
         TaskRecord, TransitionRecord, ApprovalRecord, AgentRunRecord,
         AgentStateRecord, PersistedPlan, ImplementationPlan, ImplementationStep,
         Job,
     )
-    enums = (ActorType, AgentRole, ExecutionStatus, JobStatus, WorkflowState)
+    enums = (ActorType, AgentRole, ExecutionStatus, JobStatus, WorkflowState, DiffType, ReviewRecommendation, BaselineCheckType, TestCaseCategory)
     return ({f"{cls.__module__}.{cls.__qualname__}": cls for cls in classes},
             {f"{cls.__module__}.{cls.__qualname__}": cls for cls in enums})
 
@@ -51,7 +56,9 @@ def _encode(value: Any) -> Any:
         return {"$type": "set", "value": [_encode(item) for item in value]}
     if isinstance(value, dict):
         return {"$type": "dict", "value": [[_encode(key), _encode(item)] for key, item in value.items()]}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, tuple):
+        return {"$type": "tuple", "value": [_encode(item) for item in value]}
+    if isinstance(value, list):
         return [_encode(item) for item in value]
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -72,8 +79,14 @@ def _decode(value: Any) -> Any:
         return datetime.fromisoformat(value["value"])
     if kind == "set":
         return set(_decode(item) for item in value["value"])
+    if kind == "tuple":
+        return tuple(_decode(item) for item in value["value"])
     if kind == "dict":
-        return {_decode(key): _decode(item) for key, item in value["value"]}
+        # Earlier JSON checkpoints encoded tuple dictionary keys as lists.
+        def key_value(key):
+            decoded = _decode(key)
+            return tuple(decoded) if isinstance(decoded, list) else decoded
+        return {key_value(key): _decode(item) for key, item in value["value"]}
     if kind in {"model", "dataclass"}:
         classes, _ = _registry()
         cls = classes.get(value["name"])

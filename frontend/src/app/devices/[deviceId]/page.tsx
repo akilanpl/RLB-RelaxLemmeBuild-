@@ -20,7 +20,9 @@ import {
   X,
 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
-import type { Workspace } from '@/types/workspace';
+import type { Task, PersistedPlan } from '@/types/workflow';
+import type { CodeProposal } from '@/types/diff';
+interface ReviewBundle { task: Task; plans: PersistedPlan[]; proposals: CodeProposal[]; test_plans: unknown[]; test_executions: unknown[]; review: unknown; }
 import {
   apiClient,
   ApiError,
@@ -87,7 +89,9 @@ export default function DeviceDetailPage() {
   const [commands, setCommands] = useState<DeviceCommand[]>([]);
   const [events, setEvents] = useState<DeviceEvent[]>([]);
   const [artifacts, setArtifacts] = useState<DeviceTaskArtifact[]>([]);
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [workspaces, setWorkspaces] = useState<Array<{ id: string; name: string }>>([]);
+  const [reviewBundle, setReviewBundle] = useState<ReviewBundle | null>(null);
+  const [reviewFeedback, setReviewFeedback] = useState('');
   const [eventsMessage, setEventsMessage] = useState<string | null>(null);
   const [artifactMessage, setArtifactMessage] = useState<string | null>(null);
   const eventCursor = useRef<string | null>(null);
@@ -170,10 +174,25 @@ export default function DeviceDetailPage() {
 
   useEffect(() => {
     if (!isAuthenticated) return;
-    void apiClient.listWorkspaces().then(setWorkspaces).catch((err: unknown) => {
-      setCommandError(err instanceof Error ? err.message : 'Could not load workspaces.');
-    });
-  }, [isAuthenticated]);
+    const capabilities = device?.capabilities as { local_workspaces?: Array<{ id: string; name: string }> } | undefined;
+    setWorkspaces(capabilities?.local_workspaces ?? []);
+  }, [isAuthenticated, device]);
+
+  useEffect(() => {
+    setReviewBundle(null);
+    const command = [...commands].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).find((item) =>
+      item.command_type === 'REVIEW_TASK' && item.task_id === selectedArtifactTaskId && commandStatus(item) === 'succeeded');
+    const result = command?.result as { artifact?: DeviceTaskArtifact } | undefined;
+    if (!result?.artifact || !selectedArtifactTaskId) return;
+    let cancelled = false;
+    void apiClient.downloadDeviceTaskArtifact(deviceId, selectedArtifactTaskId, result.artifact.id)
+      .then((blob) => blob.text()).then((text) => {
+        if (!cancelled) setReviewBundle(JSON.parse(text) as ReviewBundle);
+      }).catch((err: unknown) => {
+        if (!cancelled) setCommandError(err instanceof Error ? err.message : 'Could not load review evidence.');
+      });
+    return () => { cancelled = true; };
+  }, [commands, deviceId, selectedArtifactTaskId]);
 
   const hasActiveCommand = useMemo(
     () => commands.some((command) => ACTIVE_COMMAND_STATES.has(commandStatus(command))),
@@ -229,7 +248,7 @@ export default function DeviceDetailPage() {
     setCommandError(null);
     try {
       await apiClient.sendDeviceCommand(deviceId, commandType, payload, {
-        task_id: taskId ?? (typeof device?.current_task_id === 'string' ? device.current_task_id : undefined),
+        task_id: commandType === 'START_TASK' ? undefined : taskId ?? (typeof device?.current_task_id === 'string' ? device.current_task_id : undefined),
       });
       if (commandType === 'PROMPT') setPromptText('');
       await loadDeviceData(true);
@@ -238,6 +257,19 @@ export default function DeviceDetailPage() {
     } finally {
       setSending(null);
     }
+  }
+
+  async function decide(status: 'approved' | 'rejected' | 'revision_requested') {
+    if (!reviewBundle) return;
+    const { task, plans, proposals } = reviewBundle;
+    const planGate = task.status === 'plan_review';
+    const plan = plans[plans.length - 1];
+    const proposal = proposals[0];
+    await runCommand(planGate ? 'PLAN_DECISION' : 'CODE_DECISION', {
+      status, expected_version: task.version, feedback: reviewFeedback,
+      ...(planGate ? { plan_id: plan?.id } : { proposal_id: proposal?.id }),
+    }, task.id);
+    setReviewBundle(null);
   }
 
   async function revokeDevice() {
@@ -469,6 +501,27 @@ export default function DeviceDetailPage() {
         </div>
 
         <div className="space-y-5">
+          <section className="surface rounded-[18px] p-5 space-y-3">
+            <h2 className="font-semibold text-cream">Review and approve local work</h2>
+            <p className="text-xs text-cream/55">Select a task below, then load its plan, code diff, test evidence, and final review from the PC.</p>
+            <Button type="button" variant="secondary" disabled={!online || sending !== null || !selectedArtifactTaskId}
+              onClick={() => void runCommand('REVIEW_TASK', {}, selectedArtifactTaskId)}>
+              Load current review evidence
+            </Button>
+            {reviewBundle && <>
+              <p className="text-sm text-cream">{reviewBundle.task.title} · {reviewBundle.task.status} · version {reviewBundle.task.version}</p>
+              <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words text-xs text-cream/75">{JSON.stringify(reviewBundle, null, 2)}</pre>
+              {['plan_review', 'code_review'].includes(reviewBundle.task.status) && <>
+                <textarea aria-label="Revision feedback" value={reviewFeedback} onChange={(event) => setReviewFeedback(event.target.value)}
+                  maxLength={4000} placeholder="Feedback for a revision" className="w-full rounded-xl bg-midnight/50 p-3 text-sm text-cream" />
+                <div className="flex flex-wrap gap-2">
+                  <Button disabled={sending !== null} onClick={() => void decide('approved')}>Approve reviewed {reviewBundle.task.status === 'plan_review' ? 'plan' : 'code'}</Button>
+                  <Button variant="secondary" disabled={sending !== null || !reviewFeedback.trim()} onClick={() => void decide('revision_requested')}>Request revision</Button>
+                  <Button variant="danger" disabled={sending !== null} onClick={() => void decide('rejected')}>Reject</Button>
+                </div>
+              </>}
+            </>}
+          </section>
           <section className="surface rounded-[18px] p-5">
             <div className="mb-3 flex items-center gap-2">
               <Download className="h-4 w-4 text-sky" />

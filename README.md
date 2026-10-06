@@ -267,14 +267,7 @@ Test Architect → Test Executor → Reviewer, with two human approval gates)
 carries over unchanged from the original architecture and is not in
 question.
 
-What's still catching up: a handful of architecture and desktop
-implementation-status docs in the repo, particularly around **event
-synchronization** between the local runtime and the cloud, aren't yet
-perfectly in sync with each other or with this direction. The product
-direction itself is consistent — those docs just need a cleanup pass so
-they all describe the same current state. If you hit a doc that contradicts
-this README on an implementation detail, this README reflects the current
-direction.
+The local implementation now includes durable approval/recovery state, authenticated pairing, remote commands and approval decisions, event catch-up, and private review artifacts. See `docs/V1_VERIFICATION.md` for checks and evidence. Windows installer acceptance and live hosted account/deployment acceptance still require their external environments; local deterministic checks do not certify those deployments.
 
 ---
 

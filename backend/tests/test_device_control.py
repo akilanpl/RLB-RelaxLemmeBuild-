@@ -17,8 +17,10 @@ async def paired_control(tmp_path, user_id=None):
     device, secret = await service.pair(
         pairing["pairing_token"], name="Desktop", platform="windows",
         architecture="x64", app_version="1", runtime_version="1",
-        capabilities={"local_execution": True},
+        capabilities={"local_execution": True, "local_workspaces": [{"id": str(uuid4()), "name": "project"}]},
     )
+    device = await service.heartbeat(secret, runtime_state="running", current_task_id=uuid4(),
+        app_version="1", runtime_version="1", capabilities=device.capabilities)
     return service, owner, device, secret, pairing
 
 
@@ -40,7 +42,7 @@ async def test_pairing_is_one_time_and_device_is_user_scoped(tmp_path):
 async def test_expiry_revoke_and_revoke_invalidates_device_credential(tmp_path):
     service, owner, device, secret, pairing = await paired_control(tmp_path)
     pending = await service.enqueue_command(
-        device.id, owner, CommandType.PAUSE_TASK, {}, "queued-before-revoke"
+        device.id, owner, CommandType.PAUSE_TASK, {}, "queued-before-revoke", task_id=device.current_task_id
     )
     service._state["pairings"][service._digest(pairing["pairing_token"])]["expires_at"] = utcnow() - timedelta(seconds=1)
     extra = await service.create_pairing(owner)
@@ -61,10 +63,10 @@ async def test_expiry_revoke_and_revoke_invalidates_device_credential(tmp_path):
 async def test_remote_commands_are_idempotent_delivered_and_terminal(tmp_path):
     service, owner, device, secret, _ = await paired_control(tmp_path)
     first = await service.enqueue_command(
-        device.id, owner, CommandType.PAUSE_TASK, {}, "pause-command-0001"
+        device.id, owner, CommandType.PAUSE_TASK, {}, "pause-command-0001", task_id=device.current_task_id
     )
     duplicate = await service.enqueue_command(
-        device.id, owner, CommandType.PAUSE_TASK, {}, "pause-command-0001"
+        device.id, owner, CommandType.PAUSE_TASK, {}, "pause-command-0001", task_id=device.current_task_id
     )
     assert duplicate.id == first.id
     with pytest.raises(PermissionError):
@@ -87,7 +89,7 @@ async def test_remote_commands_are_idempotent_delivered_and_terminal(tmp_path):
 async def test_claimed_command_is_not_redelivered_until_claim_lease_expires(tmp_path):
     service, owner, device, secret, _ = await paired_control(tmp_path)
     command = await service.enqueue_command(
-        device.id, owner, CommandType.START_TASK, {"workspace_id": str(uuid4())},
+        device.id, owner, CommandType.START_TASK, {"workspace_id": device.capabilities["local_workspaces"][0]["id"], "objective": "Build"},
         "claim-lease-command",
     )
 
@@ -109,7 +111,7 @@ async def test_claimed_command_is_not_redelivered_until_claim_lease_expires(tmp_
 async def test_expired_command_is_terminal_and_never_delivered(tmp_path):
     service, owner, device, secret, _ = await paired_control(tmp_path)
     command = await service.enqueue_command(
-        device.id, owner, CommandType.START_TASK, {"workspace_id": str(uuid4())},
+        device.id, owner, CommandType.START_TASK, {"workspace_id": device.capabilities["local_workspaces"][0]["id"], "objective": "Build"},
         "expired-command-key",
     )
     raw = service._state["commands"][str(command.id)]

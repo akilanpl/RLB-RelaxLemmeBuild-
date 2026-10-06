@@ -48,6 +48,9 @@ class Device(BaseModel):
 
 class CommandType(str, Enum):
     START_TASK = "START_TASK"
+    REVIEW_TASK = "REVIEW_TASK"
+    PLAN_DECISION = "PLAN_DECISION"
+    CODE_DECISION = "CODE_DECISION"
     PROMPT = "PROMPT"
     PAUSE_TASK = "PAUSE_TASK"
     RESUME_TASK = "RESUME_TASK"
@@ -445,8 +448,25 @@ class DeviceControlService:
                 raise ValueError("Artifact commands require a task associated with this device.")
             device = await self.authorize_task_for_device(device_id, user_id, task_id)
         elif task_id:
-            from backend.app.services.runtime import get_runtime
-            await get_runtime().workflow.get_task(task_id, user_id)
+            await self.authorize_task_for_device(device_id, user_id, task_id)
+        elif command_type != CommandType.START_TASK:
+            raise ValueError("A task_id is required for this command.")
+        if command_type == CommandType.START_TASK:
+            workspace_id = str(UUID(str(payload.get("workspace_id", ""))))
+            registered = device.capabilities.get("local_workspaces", [])
+            if workspace_id not in {str(w.get("id")) for w in registered if isinstance(w, dict)}:
+                raise ValueError("Workspace is not registered on this device.")
+            if not 1 <= len(str(payload.get("objective", "")).strip()) <= 20000:
+                raise ValueError("Task objective must contain 1–20000 characters.")
+        if command_type in {CommandType.PLAN_DECISION, CommandType.CODE_DECISION}:
+            if payload.get("status") not in {"approved", "rejected", "revision_requested"}:
+                raise ValueError("Invalid approval decision.")
+            if not isinstance(payload.get("expected_version"), int):
+                raise ValueError("Approval requires the reviewed task version.")
+            field = "plan_id" if command_type == CommandType.PLAN_DECISION else "proposal_id"
+            UUID(str(payload.get(field, "")))
+            if payload.get("status") == "revision_requested" and not str(payload.get("feedback", "")).strip():
+                raise ValueError("Revision feedback is required.")
         ttl = min(max(ttl_seconds or int(self.DEFAULT_COMMAND_LIFETIME.total_seconds()), 1),
                   int(self.MAX_COMMAND_TTL.total_seconds()))
         now = utcnow()

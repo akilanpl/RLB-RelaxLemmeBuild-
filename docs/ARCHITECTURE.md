@@ -45,9 +45,10 @@ plane is unavailable.
 
 The current device transport uses authenticated HTTPS polling with heartbeat
 and command acknowledgements (an outbound WebSocket is not required). Local
-event outbox synchronization and cloud artifact transfer are not implemented
-yet; the web UI labels device events as unavailable instead of reporting an
-empty live stream.
+task events are committed to the local SQLite outbox and retried after reconnect.
+Private task artifacts carry review evidence and selected project files. Web
+approvals are device commands checked against the current local task version
+and specific plan/proposal; the cloud never executes or promotes local work.
 
 ```mermaid
 flowchart TD

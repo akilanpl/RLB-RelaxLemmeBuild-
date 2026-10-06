@@ -87,6 +87,8 @@ class CoderService:
         if staging_id is None:
             raise CoderExecutionError("An active staging workspace is required.")
         try:
+            if self.runtime_resolver and getattr(self.runtime_resolver, "repository", None):
+                await self.runtime_resolver.hydrate()
             runtime = (self.runtime_resolver.resolve(
                 user_id, task.workspace_id, task.id, AgentRole.CODER.value
             ) if self.runtime_resolver else None)
@@ -128,7 +130,8 @@ class CoderService:
 
     async def _apply_staging_changes(self, staging_id, user_id, change_set):
         for change in sorted(change_set.changes, key=lambda c: c.path):
-            path = change.path.replace("\\", "/").lstrip("/")
+            from backend.app.services.staging_service import _safe_relative_path
+            path = _safe_relative_path(change.path)
             if ".." in path.split("/"):
                 raise CoderExecutionError("Unsafe change path.")
             if change.operation == ChangeOperation.DELETE:
@@ -207,6 +210,18 @@ class CoderService:
             raise CoderExecutionError('Proposal does not match persisted human approval.')
         staging = await self.staging_service.get_staging_workspace(proposal.staging_workspace_id, user_id)
         ws = await self.staging_service.workspace_service.get_workspace(task.workspace_id, user_id)
+        if already_approved and hasattr(self.workflow.repository, "_store"):
+            from backend.app.services.local_promotion import promote_local
+            lock = _promotion_locks.setdefault(ws.id, asyncio.Lock())
+            async with lock:
+                publication = asyncio.create_task(promote_local(self, ws, staging, proposal, task, user_id))
+                try:
+                    return await asyncio.shield(publication)
+                except asyncio.CancelledError:
+                    # Finish an already approved publication before releasing its lock.
+                    # Stop remains terminal and does not start testing.
+                    await publication
+                    raise
         if not _same_snapshot(ws.current_snapshot_hash, proposal.base_snapshot_hash):
             raise SnapshotConflictError("Approved workspace changed since staging was created.")
         storage = self.staging_service.storage
@@ -218,7 +233,6 @@ class CoderService:
             except ValueError as exc:
                 raise SnapshotConflictError(str(exc)) from exc
         # Local storage uses the same immutable snapshot/pointer pattern.
-        import asyncio
         lock = _promotion_locks.setdefault(ws.id, asyncio.Lock())
         async with lock:
             current = await self.workflow.get_task(task.id, user_id)
