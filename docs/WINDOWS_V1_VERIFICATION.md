@@ -1,5 +1,40 @@
 # Windows V1 implementation and verification
 
+## Windows acceptance hardening follow-up
+
+Run creates a verification workflow for the selected file when no task exists,
+or the previous task is terminal. It opens the existing review UI at human gates;
+it never approves them or dispatches a direct shell execution shortcut.
+
+Windows command execution now starts an internal Python supervisor. Before it
+launches a project command, the supervisor assigns itself to an unnamed Windows
+Job Object with kill-on-close and without breakaway. The Job handle is not
+inherited by descendants. Normal supervisor exit, cancellation or parent death
+closes that handle and terminates contained descendants. A watchdog holds a
+synchronization handle to the specific runtime parent; parent death closes the
+Job handle too, without confusing a reused PID for the original runtime.
+Cancellation targets
+only the supervisor created by this execution; it does not enumerate or kill
+unrelated PIDs and does not rely on taskkill. Failure to establish containment
+fails closed before project code runs. A private project Python is required on
+Windows, as provided by the packaged toolchain. This containment does not make
+the local driver an OS container or change the user's OS permissions.
+
+Native tests cover descendant cleanup after normal command completion, forced
+cancellation and runtime-parent death, plus the existing workflow stop test. Windows CI includes
+those tests. Workflow and runtime-control states, both human gates, local API
+authentication, credential encryption and cloud control-plane boundaries are
+unchanged. The failure panel no longer attributes every failure to credentials.
+
+The real acceptance task has not passed. Plan and code generation were observed
+using a local encrypted Groq configuration with openai/gpt-oss-20b. The user
+confirmed only plan approval: code approval is pending. The observed test file
+in the selected folder does not establish code approval or execution. No live
+task is to be executed until its genuine code approval is present. Installed
+release behavior remains distinct from this source branch; it has not been
+updated with these fixes. Earlier results below are historical, not results for
+this follow-up.
+
 Date: 2026-10-06. Host: macOS arm64. Windows release acceptance has not passed; this host has no available Windows environment.
 
 ## Implementation status

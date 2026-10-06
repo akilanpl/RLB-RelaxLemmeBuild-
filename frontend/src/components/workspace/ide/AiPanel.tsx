@@ -182,7 +182,7 @@ export function AiPanel({
 
             {task.status === 'failed' && (
               <p className="rounded-2xl border border-coral/30 bg-coral/10 p-3 text-xs text-coral">
-                This step failed. Add a provider credential and a loadout that maps the agent role, then start a new task.
+                This task failed. Review its workflow history and execution evidence before starting a new task. A failure does not approve a plan or code proposal.
               </p>
             )}
 
