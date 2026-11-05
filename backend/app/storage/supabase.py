@@ -1,7 +1,6 @@
 """Supabase Storage implementation of the existing storage contract."""
 
 from typing import Any, Dict, List
-from urllib.parse import quote
 import hashlib
 
 from backend.app.storage.base import BaseStorageBackend, StorageError
