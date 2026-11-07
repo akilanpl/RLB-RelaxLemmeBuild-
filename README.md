@@ -1,280 +1,137 @@
-<div align="center">
+# RLB — Relax Lemme Build
 
-# RLB
-### Build on your machine. Control from anywhere.
+**An AI engineering runtime with durable tasks, human approval gates and recoverable publication.**
 
-**An AI engineering runtime that lives on your PC — with a cloud control plane**
-**that lets you watch and direct it from anywhere.**
+RLB coordinates planning, code proposals, test execution, repair and review against a project on the user's machine. A Python worker persists workflow state in SQLite; a Next.js interface exposes tasks and evidence, while an Electron desktop shell packages the local services. An optional hosted control plane carries authenticated commands, review decisions and events to the paired runtime.
 
-[![Status](https://img.shields.io/badge/status-active_architecture_transition-blue)]()
-[![Runtime](https://img.shields.io/badge/runtime-local--first_%7C_Windows-black)]()
-[![Control](https://img.shields.io/badge/control-cloud_%2B_web_console-8A2BE2)]()
+The central engineering problem is keeping execution, human decisions and file publication consistent across retries, cancellation, process interruption and disconnected remote control. Model responses are inputs to a persisted workflow; they do not bypass the plan or code approval gates.
 
-</div>
+[Local development](docs/LOCAL_DEVELOPMENT.md) · [Desktop architecture](docs/DESKTOP.md) · [Recorded verification](docs/V1_VERIFICATION.md)
 
----
-
-## One more thing about where RLB actually runs.
-
-We built RLB as a cloud IDE first. A browser tab was the whole product —
-project, agents, sandbox, database, execution, all living on our
-infrastructure, with the web as the only way in.
-
-Then we asked the question that mattered more than any feature:
-
-> **Why should your code have to live somewhere else just so AI can work on it?**
-
-So we moved it. Not the philosophy — the *center of gravity*.
-
-**RLB didn't get a new feature. It got a new home: your computer.**
-
----
-
-## Before and after
-
-<table>
-<tr><th>Before</th><th>Now</th></tr>
-<tr><td>
-
-```
-┌─────────────────────┐
-│     RLB CLOUD       │
-│                      │
-│ Workspace            │
-│ Agents               │
-│ Sandbox              │
-│ Database             │
-│ Execution            │
-└──────────┬───────────┘
-           │
-          WEB
-```
-
-</td><td>
-
-```
-      ┌───────────────┐
-      │   RLB CLOUD   │
-      │ Control Plane │
-      └───────┬───────┘
-              │
-        Remote Control
-              │
-              ▼
- ┌──────────────────────────┐
- │     RLB ON WINDOWS       │
- │                          │
- │ Project · Git            │
- │ Agents · Workflow        │
- │ Worker · Tests           │
- │ Execution · SQLite       │
- └────────────┬─────────────┘
-              │
-              ▼
-       YOUR CODEBASE
-```
-
-</td></tr>
-</table>
-
-Same engineering organization. Different place to live.
-
----
-
-## The idea, in one sentence
-
-> **RLB is an AI engineering runtime for your own computer, where specialized agents plan, code, test, and review software under human approval — while a cloud-backed web console lets you control and observe the runtime from anywhere.**
-
-That's a meaningfully more specific claim than "AI software-engineering
-workspace." It says exactly where the work happens, and exactly what the
-cloud is actually for.
-
----
-
-## Three Layers, One Clear Owner
+## Runtime and control plane
 
 ```mermaid
-flowchart TB
-    subgraph Internet[" "]
-        direction TB
-        CLOUD["RLB Cloud — Control Plane<br/>Auth · Devices · Remote Commands · Events · Artifacts"]
-    end
-    subgraph PC["Your Windows Machine"]
-        direction TB
-        DESKTOP[RLB Desktop / Electron] --> RUNTIME[Local FastAPI Runtime]
-        RUNTIME --> WORKER[Durable Worker]
-        WORKER --> AGENTS["Planner → Coder → Tester → Reviewer"]
-        AGENTS --> PROJECT[Local Project + Git]
-        PROJECT --> EXEC[Local Execution]
-        RUNTIME -.->|SQLite| STATE[(Local Durable State)]
-    end
-    CLOUD <-->|outbound only| DESKTOP
+flowchart LR
+    Desktop[Electron shell] --> Web[Next.js interface]
+    Web --> API[Local Python API]
+    API --> State[(SQLite workflow and evidence)]
+    Worker[Durable worker] <--> State
+    Worker --> Providers[Configured provider adapters]
+    Worker --> Stage[Staged proposals and test snapshots]
+    Stage --> Gate[Persisted human approval]
+    Gate --> Journal[Publication journal]
+    Journal --> Project[Selected project folder]
+    Remote[Remote web interface] --> Cloud[Optional hosted control plane]
+    API <-->|Outbound polling, receipts and event catch-up| Cloud
 ```
 
-### 1 · Windows runtime — the actual RLB
+The selected machine owns project execution. The local development launcher uses embedded workers and SQLite without a cloud account. In desktop mode, the shell manages loopback services, per-launch local authorization and protected paired ownership. The renderer accesses the native bridge through constrained IPC; it does not own the backend's authorization secret.
 
-This is where the real work happens, full stop. Your machine owns:
+For hosted control-only deployments, `RLB_CONTROL_PLANE_ONLY=true` prevents hosted worker startup and execution mutations. Existing hosted execution remains a separately configured mode when that setting is false. Remote commands are checked against owner, device and task association, then recorded with durable receipts so redelivery cannot silently repeat an accepted command. An event outbox catches up after network loss using stable cursors. Selected review artifacts can contain project files; remote review is an explicit data boundary, not a claim that source can never leave the machine.
 
-- your project files and Git repository
-- task execution and agent workflow
-- the durable local worker
-- SQLite state, local snapshots
-- local testing, staging, and promotion
+## Durable execution and recovery
 
-**And it keeps working even if the internet disappears.** The runtime was
-never designed to depend on a live cloud connection to do its job.
-
-### 2 · Cloud — the control plane, not the computer
-
-The cloud stopped trying to be your development environment. Its job now:
-
-```
-Identity → Device Registration → Device Pairing →
-Remote Commands → Events / Sync → Artifacts
-```
-
-It's coordination infrastructure. It doesn't hold your codebase, and it
-doesn't need to.
-
-### 3 · Web — the remote cockpit
-
-The website is now where you *watch and direct*, not where the work lives.
-Away from your desk, you open RLB and see exactly what your machine is
-doing:
-
-```
-My Windows PC                    ● Online
-
-Current Task
-"Add OAuth authentication"
-
-Planner        ✓ Complete
-Plan Approval  ✓ Approved
-Coder          ● Working
-Tests          Waiting
-
-[ Pause ]  [ Stop ]  [ Send Prompt ]  [ View Events ]  [ View Artifacts ]
-```
-
-You're not running the project in a browser tab. **You're operating a
-machine that's running it for you.**
-
----
-
-## Local-First Is the Principle, Not a Checkbox
-
-Your project files never have to leave your computer just because you want
-remote visibility.
-
-```
-Your PC
-│
-├── my-app/                 ← your actual codebase, stays put
-│   ├── src/
-│   ├── package.json
-│   └── ...
-│
-└── RLB
-    ├── workflow
-    ├── agents
-    ├── worker
-    └── SQLite
-
-Windows PC
-    │
-    ├── actual code
-    ├── execution
-    ├── agent work
-    └── task state
-          │
-          │ selected events only
-          ▼
-        Cloud
-          │
-          ▼
-         Web
-```
-
-The cloud doesn't need your repository to let you check on your Coder's
-progress from your phone. It needs a stream of events. That's the whole
-local-first bet.
-
----
-
-## What Didn't Change: The Engineering Organization
-
-This is the part we didn't rebuild — because it was never the problem.
+The following groups the implemented stages into a readable lifecycle; the worker persists more detailed intermediate states.
 
 ```mermaid
-flowchart TB
-    ENGINE[RLB Engine] --> PLANNER[Planner]
-    ENGINE --> CODER[Coder]
-    ENGINE --> REVIEWER[Reviewer]
-    CODER --> STAGING[Staging]
-    PLANNER --> STAGING
-    REVIEWER --> STAGING
-    STAGING --> TA[Test Architect]
-    TA --> TE[Test Executor]
+stateDiagram-v2
+    [*] --> Queued
+    Queued --> Planning: worker claims lease
+    Planning --> PlanReview: persist plan
+    PlanReview --> Coding: approved plan
+    Coding --> CodeReview: persist staged proposal
+    CodeReview --> Publishing: approved code
+    Publishing --> Testing: journaled publication complete
+    Testing --> Reviewing: tests pass
+    Testing --> Repairing: failed execution evidence
+    Repairing --> Coding: revised proposal
+    Reviewing --> Completed
+    Completed --> [*]
+    Queued --> Cancelled
+    Planning --> Cancelled
+    Coding --> Cancelled
+    Testing --> Cancelled
+    Cancelled --> [*]
 ```
 
-And the two human gates are still the spine of the product:
+The [durable worker](backend/app/services/durable_worker.py) claims runnable work with a lease and renews ownership through heartbeats. Loss of the lease cancels the active work rather than allowing the old worker to continue as owner. Transient retries are bounded; failure, cancellation and interrupted test execution become stored evidence. Startup reconstructs runnable work and persisted review gates instead of treating an in-memory queue as the source of truth.
 
+Plan and code decisions bind to persisted versions. Approval of an earlier proposal cannot authorize a newer one. The workflow separates a staged code artifact from writes to the selected project directory, allowing the user to inspect the exact proposal before publication.
+
+### Journaled file publication
+
+[Local promotion](backend/app/services/local_promotion.py) records immutable approved intent before modifying selected-folder files. It retains the approved content and expected prior hashes, then compares each current file with the expected old or already-published content. A matching file can be written or recognized as complete; a conflicting external edit is preserved and reported.
+
+On restart, the journal completes partial approved publication. Recovery does not resurrect a stopped or failed task into test execution: terminal task state remains terminal. This is recoverable multi-file publication, not a claim that ordinary filesystem writes form a single atomic database transaction.
+
+```mermaid
+flowchart TD
+    Restart[Runtime restarts] --> Intent[Load persisted publication intent]
+    Intent --> Compare{Target matches old or approved hash?}
+    Compare -->|No| Conflict[Preserve external edit and report conflict]
+    Compare -->|Yes| Resume[Complete or recognize approved file writes]
+    Resume --> Published[Persist publication result]
+    Published --> State{Task still active?}
+    State -->|Yes| Tests[Continue to test planning]
+    State -->|No| Terminal[Keep terminal state without starting tests]
 ```
-Plan → HUMAN APPROVAL → Code → HUMAN APPROVAL → Promotion → Testing → Review
+
+### Test execution boundary
+
+Tests run in disposable copies of immutable snapshots with bounded output, a minimal environment and process-tree cancellation. Python dependency installation uses a disposable virtual environment. The process driver still has the user's OS permissions: snapshot isolation does not supply a container, a filesystem security boundary or a network firewall.
+
+## Providers and evidence
+
+The [provider interfaces](backend/app/providers/base.py) separate vendor authentication and wire formats from workflow orchestration. Typed requests, responses, streaming chunks, tool calls and token usage flow through adapters and a configured worker/loadout resolver. The returned identity records the executed worker, model, provider and any fallback. Provider credentials are stored encrypted; desktop secret protection and pairing follow the [desktop guide](docs/DESKTOP.md).
+
+The workflow can persist and recover while disconnected from remote control. Model generation still depends on the configured provider and credentials; local execution does not imply universally offline AI inference.
+
+## Run locally
+
+Use Python 3.11+ and Node.js 20.9+; the recorded verification used Python 3.12 on macOS ARM64. From the repository root:
+
+```sh
+python3 -m venv backend/.venv
+backend/.venv/bin/python -m pip install -r backend/requirements-dev.txt
+backend/.venv/bin/python -m backend.local
 ```
 
-Specialized roles. Scoped permissions. Staging before canonical. Human
-approval at every consequential step. **None of that moved when the
-runtime did.** It just moved with it, onto your machine.
+The launcher loads `backend/.env.local` when present, otherwise `backend/.env.example`, and forces the development configuration. It uses SQLite under `storage/local-runtime/rlb.sqlite3` with embedded execution. Inspect health at `http://127.0.0.1:8000/health`. Configure a provider and loadout before requesting AI work.
 
----
+In another terminal:
 
-## What Happens to Daytona / Railway?
-
-Nothing is deleted. They were demoted — from *required infrastructure* to
-*optional capability*.
-
-```
-LOCAL MODE     Your Windows PC — the primary mode
-HOSTED MODE    Cloud / Daytona — optional hosted workers, for later
-REMOTE CONTROL Controls either mode, from the same web console
+```sh
+cd frontend
+npm ci
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8000 npm run dev
 ```
 
-**Local Windows execution is the product now.** Hosted execution becomes
-something RLB can offer, not something it depends on.
+Real Supabase authentication requires the public Supabase configuration described in [local development](docs/LOCAL_DEVELOPMENT.md). An unconfigured UI can render setup/preview surfaces without fabricating a signed-in session.
 
----
+For the Electron development shell, install `backend/requirements-desktop.txt` into the backend environment, then run `npm install` and `npm start` from `desktop`. The shell starts the local backend and frontend. Packaged builds use the standalone frontend and frozen Python sidecar; `npm run dist` in `desktop` targets the Windows x64 installer and must run on Windows. Closing the window can leave the app in the tray; use Quit to stop it.
 
-## The Current Thesis
+## Verification
 
-> **AI shouldn't replace your development environment.**
-> **AI should become an engineering organization that operates inside it.**
+[V1 verification](docs/V1_VERIFICATION.md) records **242 backend tests passed and two disposable PostgreSQL tests skipped** on 2026-10-06, plus frontend lint/types/build, nine Electron startup tests and two frontend desktop contract tests. Its 31 V1 cases cover restart at approval gates, failed execution and repair, stale/cross-owner decisions, encrypted configuration reconstruction, terminal publication recovery, external-edit conflicts, cancellation and control-only behavior. These are recorded implementation results, not a fresh run or Windows/hosted acceptance certification.
 
-RLB gives that organization roles, permissions, staging, approvals,
-testing, review, persistence — and now, remote control. The agents didn't
-change jobs. They just stopped commuting to the cloud to do them.
+From a configured development checkout:
 
----
+```sh
+RLB_ENV_FILE=backend/.env.example backend/.venv/bin/python -m pytest backend/tests backend/integration backend/hosted_integration -q --tb=short
+backend/.venv/bin/python -m compileall -q backend scripts
+```
 
-## The Honest Part
+Run frontend `npm run lint`, `npm run typecheck` and `npm run build` from `frontend`; run `npm run check` and `npm run build:all` from `desktop`. The verification guide specifies the separate Windows installation, PostgreSQL/pgmq and real hosted-account acceptance campaigns. Building a package does not establish those outcomes.
 
-Same policy as always: say what's actually true, not what sounds finished.
+## Code map
 
-The product direction described here — local-first Windows runtime, cloud
-as control plane, web as remote cockpit — **is the settled direction**, not
-a proposal under debate. The underlying engineering loop (Planner → Coder →
-Test Architect → Test Executor → Reviewer, with two human approval gates)
-carries over unchanged from the original architecture and is not in
-question.
+| Path | Responsibility |
+|---|---|
+| [backend/app/services/durable_worker.py](backend/app/services/durable_worker.py) | Leased workflow execution, stage progression and recovery |
+| [backend/app/services/local_promotion.py](backend/app/services/local_promotion.py) | Approved-intent journal and conflict-preserving publication |
+| [backend/app/providers/](backend/app/providers/) | Provider contracts, adapters, workers and loadout resolution |
+| [frontend/](frontend/) | Task, review and configuration interfaces |
+| [desktop/](desktop/) | Electron lifecycle, packaging and native bridge |
+| [backend/tests/](backend/tests/) · [backend/integration/](backend/integration/) | Unit and workflow regression evidence |
 
-The local implementation now includes durable approval/recovery state, authenticated pairing, remote commands and approval decisions, event catch-up, and private review artifacts. See `docs/V1_VERIFICATION.md` for checks and evidence. Windows installer acceptance and live hosted account/deployment acceptance still require their external environments; local deterministic checks do not certify those deployments.
-
----
-
-<div align="center">
-
-### RLB — Build on your machine. Control from anywhere.
-
-*Not a cloud IDE with a desktop app bolted on. A runtime that lives where your code already does.*
-
-</div>
+Documentation basis: [`b48e5e9`](https://github.com/akilanpl/RLB-RelaxLemmeBuild-/tree/b48e5e9a60001a7f86fc7dcbf45f47df60b5b942). Historical verification receipts retain their original environment and source scope.
