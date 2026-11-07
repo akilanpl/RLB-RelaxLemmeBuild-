@@ -8,6 +8,8 @@ The central engineering problem is keeping execution, human decisions and file p
 
 [Local development](docs/LOCAL_DEVELOPMENT.md) · [Desktop architecture](docs/DESKTOP.md) · [Recorded verification](docs/V1_VERIFICATION.md)
 
+[Engineering documentation](docs/README.md)
+
 ## Runtime and control plane
 
 ```mermaid
